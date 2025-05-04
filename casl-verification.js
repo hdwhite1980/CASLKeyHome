@@ -4,7 +4,7 @@ class CASLVerification extends HTMLElement {
     this.attachShadow({ mode: 'open' });
     
     // Constants
-    this.API_BASE_URL = 'https://your-api-gateway-url/prod'; // Replace with your API Gateway URL
+    this.API_BASE_URL = 'https://tn25108ywk.execute-api.us-east-2.amazonaws.com/prod'; // Replace with your API Gateway URL
     
     // State
     this.currentStep = 0;
