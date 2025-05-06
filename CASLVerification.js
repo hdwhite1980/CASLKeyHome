@@ -26,13 +26,26 @@ import {
 } from '../services/storage.js';
 
 import { apiService } from '../services/api.js';
+import { apiSecurity } from '../services/apiSecurity.js';
 import { backgroundCheckService } from '../services/backgroundCheck.js';
+import { i18nService, t } from '../services/i18n.js';
+import { governmentIdVerification } from '../services/governmentIdVerification.js';
+import { phoneVerification } from '../services/phoneVerification.js';
+import { socialVerification } from '../services/socialVerification.js';
+
 import {
   calculateScore,
   getTrustLevel,
   getResultMessage,
   generateHostSummary
 } from '../services/scoreCalculator.js';
+
+import {
+  renderVerificationMethodSelector,
+  renderVerificationMethod,
+  handleVerificationMethodSelection,
+  handleVerificationMethodComplete
+} from './VerificationMethods.js';
 
 import { VERIFICATION_STATUSES } from '../utils/constants.js';
 
@@ -56,6 +69,9 @@ export class CASLVerification extends HTMLElement {
     this.render();
     this.setupEventListeners();
     this.loadSavedData();
+    
+    // Initialize API security and i18n
+    this.initializeServices();
   }
   
   /**
@@ -120,6 +136,10 @@ export class CASLVerification extends HTMLElement {
     this.showRestoredMessage = false;
     this.apiError = null;
     
+    // Additional verification methods
+    this.showVerificationMethods = false;
+    this.selectedVerificationMethod = null;
+    
     // Trust results
     this.score = 0;
     this.trustLevel = '';
@@ -128,6 +148,21 @@ export class CASLVerification extends HTMLElement {
     
     // Trust preview (what hosts will see)
     this.trustPreview = null;
+  }
+  
+  /**
+   * Initialize services
+   */
+  async initializeServices() {
+    try {
+      // Initialize API security
+      await apiSecurity.initialize();
+      
+      // Initialize i18n service
+      await i18nService.init();
+    } catch (error) {
+      console.error('Error initializing services:', error);
+    }
   }
   
   /**
@@ -145,8 +180,11 @@ export class CASLVerification extends HTMLElement {
     
     this.shadowRoot.innerHTML = `
       <style>${getStyles()}</style>
-      <div class="container">
-        <h1 style="text-align: center; margin-bottom: 20px;">CASL Key Verification</h1>
+      <div class="container" dir="${i18nService.getLanguageInfo(i18nService.currentLanguage)?.direction || 'ltr'}">
+        <div class="header">
+          <h1 style="text-align: center; margin-bottom: 20px;">${t('app.title')}</h1>
+          ${i18nService.renderLanguageSelector()}
+        </div>
         ${content}
       </div>
     `;
@@ -156,6 +194,25 @@ export class CASLVerification extends HTMLElement {
    * Render the form based on current step
    */
   renderForm() {
+    // If additional verification methods are shown, render those
+    if (this.showVerificationMethods) {
+      return `
+        ${renderAlerts(this.showRestoredMessage, this.apiError)}
+        ${this.selectedVerificationMethod 
+          ? renderVerificationMethod(this.selectedVerificationMethod, this.userIdentification.caslKeyId)
+          : renderVerificationMethodSelector(this.userIdentification)}
+        <div class="navigation-buttons">
+          <button 
+            onclick="this.getRootNode().host.toggleVerificationMethods(false)"
+            class="neutral"
+          >
+            ${t('app.previous')}
+          </button>
+        </div>
+      `;
+    }
+    
+    // Otherwise render the main form steps
     return `
       ${renderProgressSteps(this.currentStep)}
       ${renderAlerts(this.showRestoredMessage, this.apiError)}
@@ -237,12 +294,41 @@ export class CASLVerification extends HTMLElement {
   }
   
   /**
+   * Handle language change
+   * @param {Event} event - Language change event
+   */
+  handleLanguageChange(event) {
+    const langCode = event.target.value;
+    i18nService.changeLanguage(langCode).then(() => {
+      this.render();
+    });
+  }
+  
+  /**
    * Toggle screenshot upload section
    * @param {boolean} show - Whether to show the screenshot upload section
    */
   toggleScreenshotUpload(show) {
     this.showScreenshotUpload = show;
     this.render();
+  }
+  
+  /**
+   * Toggle verification methods section
+   * @param {boolean} show - Whether to show verification methods
+   */
+  toggleVerificationMethods(show) {
+    this.showVerificationMethods = show;
+    this.selectedVerificationMethod = null;
+    this.render();
+  }
+  
+  /**
+   * Select a verification method
+   * @param {string} method - Verification method to select
+   */
+  selectVerificationMethod(method) {
+    handleVerificationMethodSelection(method, this);
   }
   
   /**
@@ -255,7 +341,7 @@ export class CASLVerification extends HTMLElement {
     
     // Only accept images
     if (!file.type.startsWith('image/')) {
-      this.apiError = "Please select an image file (JPG, PNG, etc.)";
+      this.apiError = t('errors.invalidImageType');
       this.render();
       return;
     }
@@ -313,7 +399,7 @@ export class CASLVerification extends HTMLElement {
     
     // Only accept images
     if (!file.type.startsWith('image/')) {
-      this.apiError = "Please select an image file (JPG, PNG, etc.)";
+      this.apiError = t('errors.invalidImageType');
       this.render();
       return;
     }
@@ -341,7 +427,7 @@ export class CASLVerification extends HTMLElement {
    */
   async uploadScreenshot() {
     if (!this.screenshotData) {
-      this.apiError = "Please upload a screenshot first";
+      this.apiError = t('errors.noScreenshot');
       this.render();
       return false;
     }
@@ -364,7 +450,7 @@ export class CASLVerification extends HTMLElement {
       return true;
     } catch (error) {
       console.error('Error uploading screenshot:', error);
-      this.apiError = `Error uploading screenshot: ${error.message}`;
+      this.apiError = `${t('errors.uploadError')}: ${error.message}`;
       this.isLoading = false;
       this.render();
       return false;
@@ -408,7 +494,7 @@ export class CASLVerification extends HTMLElement {
       } catch (error) {
         console.error('Error checking verification status:', error);
         clearInterval(pollInterval);
-        this.apiError = `Error checking verification status: ${error.message}`;
+        this.apiError = `${t('errors.statusCheckError')}: ${error.message}`;
         this.isLoading = false;
         this.render();
       }
@@ -506,6 +592,7 @@ export class CASLVerification extends HTMLElement {
       this.updateTrustPreview();
     }
     
+    // Complete current step
     if (this.currentStep < 3) {
       this.currentStep += 1;
       this.saveFormData();
@@ -534,7 +621,7 @@ export class CASLVerification extends HTMLElement {
    */
   async handleCheckUser() {
     if (!this.formData.email) {
-      this.errors.email = "Email is required for verification";
+      this.errors.email = t('errors.emailRequired');
       this.render();
       return false;
     }
@@ -572,11 +659,11 @@ export class CASLVerification extends HTMLElement {
       return true;
     } catch (error) {
       this.isLoading = false;
-      this.apiError = error.message || "An error occurred during verification";
+      this.apiError = error.message || t('errors.verificationError');
       this.userIdentification = {
         ...this.userIdentification,
         isChecking: false,
-        error: error.message || "Failed to verify user. Please try again."
+        error: error.message || t('errors.userCheckFailed')
       };
       
       this.render();
@@ -616,7 +703,230 @@ export class CASLVerification extends HTMLElement {
       this.render();
     } catch (error) {
       console.error('Background check error:', error);
-      this.apiError = error.message || "Error processing background check";
+      this.apiError = error.message || t('errors.backgroundCheckError');
+      this.isLoading = false;
+      this.render();
+    }
+  }
+  
+  /**
+   * Handle Government ID verification
+   * @param {string} userId - User ID
+   */
+  async handleIdImageUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    const success = await governmentIdVerification.uploadIdImage(file);
+    if (!success) {
+      this.apiError = governmentIdVerification.error;
+    }
+    this.render();
+  }
+  
+  /**
+   * Handle Selfie image upload
+   * @param {string} userId - User ID
+   */
+  async handleSelfieImageUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    const success = await governmentIdVerification.uploadSelfieImage(file);
+    if (!success) {
+      this.apiError = governmentIdVerification.error;
+    }
+    this.render();
+  }
+  
+  /**
+   * Clear ID image
+   */
+  clearIdImage() {
+    governmentIdVerification.idImageData = null;
+    this.render();
+  }
+  
+  /**
+   * Clear selfie image
+   */
+  clearSelfieImage() {
+    governmentIdVerification.selfieImageData = null;
+    this.render();
+  }
+  
+  /**
+   * Verify Government ID
+   * @param {string} userId - User ID
+   */
+  async verifyGovId(userId) {
+    this.isLoading = true;
+    this.render();
+    
+    try {
+      const result = await governmentIdVerification.verifyId(userId);
+      
+      if (result && result.status === 'verified') {
+        // Update user identification
+        this.userIdentification.idVerificationData = {
+          verified: true,
+          method: 'government-id',
+          timestamp: new Date().toISOString()
+        };
+        
+        // Update trust preview
+        this.updateTrustPreview();
+      }
+      
+      this.isLoading = false;
+      this.render();
+    } catch (error) {
+      console.error('ID verification error:', error);
+      this.apiError = error.message || t('errors.idVerificationError');
+      this.isLoading = false;
+      this.render();
+    }
+  }
+  
+  /**
+   * Request phone verification
+   * @param {string} userId - User ID
+   */
+  async requestPhoneVerification(userId) {
+    const phoneInput = this.shadowRoot.getElementById('phone-input');
+    if (!phoneInput) return;
+    
+    const phoneNumber = phoneInput.value;
+    if (!phoneNumber) {
+      this.apiError = t('errors.phoneRequired');
+      this.render();
+      return;
+    }
+    
+    this.isLoading = true;
+    this.render();
+    
+    try {
+      const success = await phoneVerification.requestVerificationCode(phoneNumber, userId);
+      
+      this.isLoading = false;
+      if (!success) {
+        this.apiError = phoneVerification.error;
+      }
+      this.render();
+    } catch (error) {
+      console.error('Phone verification error:', error);
+      this.apiError = error.message || t('errors.phoneVerificationError');
+      this.isLoading = false;
+      this.render();
+    }
+  }
+  
+  /**
+   * Verify phone code
+   * @param {string} userId - User ID
+   */
+  async verifyPhoneCode(userId) {
+    const codeInput = this.shadowRoot.getElementById('verification-code');
+    if (!codeInput) return;
+    
+    const code = codeInput.value;
+    if (!code) {
+      this.apiError = t('errors.codeRequired');
+      this.render();
+      return;
+    }
+    
+    this.isLoading = true;
+    this.render();
+    
+    try {
+      const result = await phoneVerification.verifyCode(code, userId);
+      
+      this.isLoading = false;
+      
+      if (result && result.verified) {
+        // Update trust preview
+        this.updateTrustPreview();
+      } else if (phoneVerification.error) {
+        this.apiError = phoneVerification.error;
+      }
+      
+      this.render();
+    } catch (error) {
+      console.error('Phone code verification error:', error);
+      this.apiError = error.message || t('errors.codeVerificationError');
+      this.isLoading = false;
+      this.render();
+    }
+  }
+  
+  /**
+   * Resend verification code
+   * @param {string} userId - User ID
+   */
+  async resendVerificationCode(userId) {
+    // Clear previous timer
+    phoneVerification.clearTimer();
+    
+    // Request new code
+    await this.requestPhoneVerification(userId);
+  }
+  
+  /**
+   * Handle social platform change
+   * @param {Event} event - Change event
+   */
+  handleSocialPlatformChange(event) {
+    const platform = event.target.value;
+    socialVerification.platform = platform;
+    this.render();
+  }
+  
+  /**
+   * Verify social profile
+   * @param {string} userId - User ID
+   */
+  async verifySocialProfile(userId) {
+    const platformSelect = this.shadowRoot.getElementById('social-platform');
+    const profileUrlInput = this.shadowRoot.getElementById('profile-url');
+    
+    if (!platformSelect || !profileUrlInput) return;
+    
+    const platform = platformSelect.value;
+    const profileUrl = profileUrlInput.value;
+    
+    if (!platform) {
+      this.apiError = t('errors.platformRequired');
+      this.render();
+      return;
+    }
+    
+    if (!profileUrl) {
+      this.apiError = t('errors.profileUrlRequired');
+      this.render();
+      return;
+    }
+    
+    this.isLoading = true;
+    this.render();
+    
+    try {
+      const result = await socialVerification.verifySocialProfile(platform, profileUrl, userId);
+      
+      this.isLoading = false;
+      
+      if (result && result.status === 'verified') {
+        // Update trust preview
+        this.updateTrustPreview();
+      } else if (socialVerification.error) {
+        this.apiError = socialVerification.error;
+      }
+      
+      this.render();
+    } catch (error) {
+      console.error('Social verification error:', error);
+      this.apiError = error.message || t('errors.socialVerificationError');
       this.isLoading = false;
       this.render();
     }
@@ -657,6 +967,9 @@ export class CASLVerification extends HTMLElement {
           trustLevel: trustLevel,
           verificationType: this.userIdentification.verificationType,
           backgroundCheckStatus: this.userIdentification.backgroundCheckStatus,
+          idVerificationStatus: this.userIdentification.idVerificationData?.verified || false,
+          phoneVerificationStatus: phoneVerification.verificationStatus === 'verified',
+          socialVerificationStatus: socialVerification.verificationStatus === 'verified',
           adjustments: result.adjustments,
           verificationDate: new Date().toISOString()
         },
@@ -713,7 +1026,7 @@ export class CASLVerification extends HTMLElement {
       
     } catch (error) {
       console.error('Error during submission:', error);
-      this.apiError = "Error submitting verification. Please try again.";
+      this.apiError = error.message || t('errors.submissionError');
       this.isLoading = false;
       this.render();
     }
@@ -724,6 +1037,12 @@ export class CASLVerification extends HTMLElement {
    */
   handleReset() {
     this.initializeState();
+    
+    // Also reset verification services
+    governmentIdVerification.reset();
+    phoneVerification.reset();
+    socialVerification.reset();
+    
     this.validateForm();
     this.clearSavedData();
     this.render();
@@ -779,7 +1098,15 @@ export class CASLVerification extends HTMLElement {
    * Setup event listeners
    */
   setupEventListeners() {
-    // No additional setup needed as we're using inline event handlers
+    // Listen for language changes
+    document.addEventListener('caslLanguageChanged', () => {
+      this.render();
+    });
+    
+    // Listen for phone verification timer expiration
+    document.addEventListener('phoneVerificationTimerExpired', () => {
+      this.render();
+    });
   }
 }
 
