@@ -295,3 +295,92 @@ class I18nService {
     });
     document.dispatchEvent(event);
   }
+  
+  /**
+   * Get information about a language
+   * @param {string} langCode - Language code
+   * @returns {Object|null} Language information
+   */
+  getLanguageInfo(langCode) {
+    return this.availableLanguages.find(lang => lang.code === langCode) || null;
+  }
+  
+  /**
+   * Update document language and direction
+   */
+  updateDocumentLanguage() {
+    const langInfo = this.getLanguageInfo(this.currentLanguage);
+    if (langInfo) {
+      // Set HTML dir attribute for RTL languages
+      document.documentElement.dir = langInfo.direction;
+      document.documentElement.lang = langInfo.code;
+    }
+  }
+  
+  /**
+   * Render a language selector dropdown
+   * @returns {string} HTML for language selector
+   */
+  renderLanguageSelector() {
+    const currentLang = this.getLanguageInfo(this.currentLanguage);
+    
+    let options = '';
+    this.availableLanguages.forEach(lang => {
+      options += `
+        <option value="${lang.code}" ${lang.code === this.currentLanguage ? 'selected' : ''}>
+          ${lang.name}
+        </option>
+      `;
+    });
+    
+    return `
+      <div class="language-selector">
+        <label for="language-select">${this.translate('language.select')}</label>
+        <select id="language-select" onchange="this.getRootNode().host.handleLanguageChange(event)">
+          ${options}
+        </select>
+        <p class="current-language">${this.translate('language.current')}</p>
+      </div>
+    `;
+  }
+  
+  /**
+   * Format date according to current locale
+   * @param {Date|string} date - Date to format
+   * @param {Object} options - Intl.DateTimeFormat options
+   * @returns {string} Formatted date
+   */
+  formatDate(date, options = { dateStyle: 'medium' }) {
+    const dateObj = date instanceof Date ? date : new Date(date);
+    return new Intl.DateTimeFormat(this.currentLanguage, options).format(dateObj);
+  }
+  
+  /**
+   * Format number according to current locale
+   * @param {number} number - Number to format
+   * @param {Object} options - Intl.NumberFormat options
+   * @returns {string} Formatted number
+   */
+  formatNumber(number, options = {}) {
+    return new Intl.NumberFormat(this.currentLanguage, options).format(number);
+  }
+  
+  /**
+   * Format currency according to current locale
+   * @param {number} amount - Amount to format
+   * @param {string} currency - Currency code (e.g., USD)
+   * @returns {string} Formatted currency
+   */
+  formatCurrency(amount, currency = 'USD') {
+    return new Intl.NumberFormat(this.currentLanguage, {
+      style: 'currency',
+      currency
+    }).format(amount);
+  }
+}
+
+// Shorthand function for translation
+export const t = (key, params = {}) => i18nService.translate(key, params);
+
+// Export singleton instance
+export const i18nService = new I18nService();
