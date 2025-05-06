@@ -150,3 +150,138 @@ class SocialVerification {
       <div class="form-section">
         <h3>${t('socialVerification.verification')}</h3>
         <p>${t('socialVerification.description')}</p>
+        ${this.renderVerificationForm(userId)}
+      </div>
+    `;
+  }
+  
+  /**
+   * Render verification form
+   * @param {string} userId - User ID
+   * @returns {string} HTML content
+   */
+  renderVerificationForm(userId) {
+    const t = i18nService.translate.bind(i18nService);
+    
+    // Generate platform options
+    let platformOptions = '';
+    this.availablePlatforms.forEach(platform => {
+      platformOptions += `
+        <option value="${platform.id}" ${this.platform === platform.id ? 'selected' : ''}>
+          ${platform.name}
+        </option>
+      `;
+    });
+    
+    return `
+      <div class="social-verification-form">
+        <div class="platform-selection">
+          <label for="social-platform">${t('socialVerification.selectPlatform')}</label>
+          <select 
+            id="social-platform" 
+            onchange="this.getRootNode().host.handleSocialPlatformChange(event)"
+          >
+            <option value="">${t('socialVerification.choosePlatform')}</option>
+            ${platformOptions}
+          </select>
+        </div>
+        
+        <div class="profile-url-section">
+          <label for="profile-url">${t('socialVerification.profileUrl')}</label>
+          <input 
+            type="url" 
+            id="profile-url" 
+            placeholder="https://www.example.com/profile/username"
+            value="${this.profileUrl || ''}"
+          />
+          <p class="hint">${t('socialVerification.profileUrlHint')}</p>
+        </div>
+        
+        <div class="verification-privacy-notice">
+          <h4>${t('socialVerification.privacyNotice')}</h4>
+          <p>${t('socialVerification.privacyDescription')}</p>
+        </div>
+        
+        <div class="verification-actions">
+          <button 
+            onclick="this.getRootNode().host.verifySocialProfile('${userId}')"
+            ${this.isLoading ? 'disabled' : ''}
+            class="success"
+          >
+            ${this.isLoading ? t('app.loading') : t('socialVerification.verify')}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+  
+  /**
+   * Get OAuth URL for social platform
+   * @param {string} platform - Platform ID
+   * @returns {string|null} OAuth URL or null if not supported
+   */
+  getOAuthUrl(platform) {
+    // This would be implemented with real OAuth endpoints
+    // For demo purposes, return mock URLs
+    const baseOAuthUrl = 'https://casl-key-auth.example.com/oauth';
+    
+    switch (platform) {
+      case 'facebook':
+        return `${baseOAuthUrl}/facebook`;
+      case 'linkedin':
+        return `${baseOAuthUrl}/linkedin`;
+      case 'instagram':
+        return `${baseOAuthUrl}/instagram`;
+      default:
+        return null; // Direct URL verification
+    }
+  }
+  
+  /**
+   * Handle OAuth callback
+   * @param {Object} params - URL parameters from OAuth callback
+   * @param {string} userId - User ID
+   * @returns {Promise<boolean>} Success status
+   */
+  async handleOAuthCallback(params, userId) {
+    if (!params || !params.code || !params.state) {
+      this.error = i18nService.translate('socialVerification.invalidCallback');
+      return false;
+    }
+    
+    try {
+      this.isLoading = true;
+      
+      // Extract platform from state parameter
+      const platform = params.state.split('-')[0];
+      
+      if (!this.isValidPlatform(platform)) {
+        throw new Error(i18nService.translate('socialVerification.invalidPlatform'));
+      }
+      
+      // Call API to verify with OAuth code
+      const result = await apiService.verifySocialMedia(
+        platform,
+        null, // No URL needed with OAuth
+        params.code,
+        userId
+      );
+      
+      // Update verification status
+      this.platform = platform;
+      this.verificationStatus = result.status;
+      
+      return true;
+    } catch (error) {
+      console.error('Error handling OAuth callback:', error);
+      this.error = error.message || i18nService.translate('socialVerification.oauthFailed');
+      this.verificationStatus = 'error';
+      return false;
+    } finally {
+      this.isLoading = false;
+    }
+  }
+}
+
+// Export singleton instance
+export const socialVerification = new SocialVerification();
