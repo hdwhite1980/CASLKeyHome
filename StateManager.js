@@ -365,3 +365,108 @@ class StateManager {
     const notification = {
       id: Date.now().toString(),
       message,
+      type,
+      timestamp: new Date().toISOString(),
+      timeout
+    };
+    
+    this.updateState('ui', currentState => {
+      return {
+        ...currentState,
+        notifications: [...currentState.notifications, notification]
+      };
+    });
+    
+    // Auto-dismiss if timeout is set
+    if (timeout > 0) {
+      setTimeout(() => {
+        this.removeNotification(notification.id);
+      }, timeout);
+    }
+    
+    return notification.id;
+  }
+  
+  /**
+   * Remove a UI notification
+   * @param {string} notificationId - Notification ID
+   */
+  removeNotification(notificationId) {
+    this.updateState('ui', currentState => {
+      return {
+        ...currentState,
+        notifications: currentState.notifications.filter(
+          n => n.id !== notificationId
+        )
+      };
+    });
+  }
+  
+  /**
+   * Show a modal dialog
+   * @param {Object} modalConfig - Modal configuration
+   */
+  showModal(modalConfig) {
+    this.updateState('ui', { modal: modalConfig });
+  }
+  
+  /**
+   * Hide the modal dialog
+   */
+  hideModal() {
+    this.updateState('ui', { modal: null });
+  }
+  
+  /**
+   * Show an alert
+   * @param {Object} alertConfig - Alert configuration
+   */
+  showAlert(alertConfig) {
+    this.updateState('ui', { alert: alertConfig });
+  }
+  
+  /**
+   * Hide the alert
+   */
+  hideAlert() {
+    this.updateState('ui', { alert: null });
+  }
+  
+  /**
+   * Set the UI loading state
+   * @param {boolean} isLoading - Whether UI is loading
+   */
+  setLoading(isLoading) {
+    this.updateState('ui', { loading: isLoading });
+  }
+  
+  /**
+   * Set the results data
+   * @param {Object} resultsData - Verification results data
+   */
+  setResults(resultsData) {
+    this.updateState('results', resultsData);
+  }
+  
+  /**
+   * Get debug info
+   * @returns {Object} Debug information
+   */
+  getDebugInfo() {
+    return {
+      stateSize: JSON.stringify(this._state).length,
+      subscribers: {
+        auth: this._subscribers.auth.size,
+        verification: this._subscribers.verification.size,
+        formData: this._subscribers.formData.size,
+        ui: this._subscribers.ui.size,
+        results: this._subscribers.results.size,
+        all: this._subscribers.all.size
+      },
+      persistedSections: {
+        formData: !!localStorage.getItem('casl_state_formData'),
+        ui: !!localStorage.getItem('casl_state_ui')
+      }
+    };
+  }
+}
