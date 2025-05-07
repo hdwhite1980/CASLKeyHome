@@ -262,4 +262,244 @@ export class UserDashboard extends HTMLElement {
    * Render a verification card
    * @param {Object} verification - Verification data
    */
-  render
+  renderVerificationCard(verification) {
+    // Format date
+    const date = new Date(verification.verificationDate);
+    const formattedDate = i18nService.formatDate(date);
+    
+    // Get trust level display data
+    const trustLevelLabel = t(`trustLevel.${verification.trustLevel}`) || verification.trustLevel;
+    const score = verification.score || 0;
+    
+    // Determine badge color based on trust level
+    let badgeColor = '#4CAF50'; // Default green
+    if (verification.trustLevel === 'review') {
+      badgeColor = '#FFC107'; // Yellow
+    } else if (verification.trustLevel === 'manual_review') {
+      badgeColor = '#9E9E9E'; // Gray
+    } else if (verification.trustLevel === 'not_eligible') {
+      badgeColor = '#757575'; // Dark gray
+    }
+    
+    return `
+      <div class="verification-card">
+        <div class="verification-header">
+          <div class="trust-badge" style="background-color: ${badgeColor}">
+            ${trustLevelLabel}
+          </div>
+          <div class="verification-date">
+            ${formattedDate}
+          </div>
+        </div>
+        
+        <div class="verification-body">
+          <div class="verification-score">
+            <span class="score-number">${score}</span>
+            <span class="score-max">/100</span>
+          </div>
+          
+          <div class="verification-details">
+            <p class="casl-key-id">CASL Key ID: ${verification.caslKeyId}</p>
+            <p class="booking-info">
+              ${verification.booking?.platform ? `${verification.booking.platform}` : ''}
+              ${verification.booking?.checkInDate ? ` | Check-in: ${i18nService.formatDate(new Date(verification.booking.checkInDate))}` : ''}
+            </p>
+          </div>
+        </div>
+        
+        <div class="verification-actions">
+          <button 
+            class="btn-link" 
+            onclick="this.getRootNode().host.viewVerificationDetails('${verification.caslKeyId}')"
+          >
+            ${t('dashboard.viewDetails')}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+  
+  /**
+   * Render available packages
+   */
+  renderPackages() {
+    if (this.packages.length === 0) {
+      return '';
+    }
+    
+    return `
+      <div class="packages-section">
+        <h2>${t('dashboard.availablePackages')}</h2>
+        <div class="package-cards">
+          ${this.packages.map(pkg => this.renderPackageCard(pkg)).join('')}
+        </div>
+      </div>
+    `;
+  }
+  
+  /**
+   * Render a package card
+   * @param {Object} pkg - Package data
+   */
+  renderPackageCard(pkg) {
+    return `
+      <div class="package-card">
+        <div class="package-header">
+          <h3>${pkg.name}</h3>
+          <div class="package-price">
+            ${i18nService.formatCurrency(pkg.price, pkg.currency)}
+          </div>
+        </div>
+        
+        <div class="package-body">
+          <p class="package-description">${pkg.description}</p>
+          <ul class="package-features">
+            ${pkg.features.map(feature => `<li>${feature}</li>`).join('')}
+          </ul>
+        </div>
+        
+        <div class="package-actions">
+          <button 
+            class="btn-primary" 
+            onclick="this.getRootNode().host.purchasePackage('${pkg.id}')"
+            data-package-id="${pkg.id}"
+          >
+            ${t('dashboard.purchase')}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+  
+  /**
+   * View verification details
+   * @param {string} caslKeyId - CASL Key ID
+   */
+  async viewVerificationDetails(caslKeyId) {
+    try {
+      // Find verification in history
+      const verification = this.verificationHistory.find(v => v.caslKeyId === caslKeyId);
+      
+      if (!verification) {
+        throw new Error(t('dashboard.verificationNotFound'));
+      }
+      
+      // Dispatch event to show verification details
+      this.dispatchDashboardEvent('view-verification', { verification });
+    } catch (error) {
+      console.error('Error viewing verification details:', error);
+      this.error = error.message;
+      this.render();
+    }
+  }
+  
+  /**
+   * Start a new verification
+   */
+  startNewVerification() {
+    // Check if user has available verifications
+    const hasAvailableVerifications = this.verificationHistory.length === 0 || 
+                                     this.hasUnusedVerificationSlots();
+    
+    if (hasAvailableVerifications) {
+      // Dispatch event to start new verification
+      this.dispatchDashboardEvent('new-verification');
+    } else {
+      // Show package purchase dialog
+      this.dispatchDashboardEvent('show-packages');
+    }
+  }
+  
+  /**
+   * Check if user has unused verification slots
+   * @returns {boolean} Whether user has unused slots
+   */
+  hasUnusedVerificationSlots() {
+    // This would check against the user's purchased packages
+    // For demo purposes, we'll return true if they've purchased any packages
+    return this.user?.purchasedPackages?.some(pkg => pkg.remainingVerifications > 0) || false;
+  }
+  
+  /**
+   * Purchase a package
+   * @param {string} packageId - Package ID
+   */
+  purchasePackage(packageId) {
+    // Find package
+    const pkg = this.packages.find(p => p.id === packageId);
+    
+    if (!pkg) {
+      this.error = t('dashboard.packageNotFound');
+      this.render();
+      return;
+    }
+    
+    // Launch Wix payment flow
+    this.dispatchDashboardEvent('purchase-package', { 
+      package: pkg,
+      userId: this.user.id
+    });
+  }
+  
+  /**
+   * Handle package purchase success
+   * @param {Object} packageData - Purchased package data
+   */
+  handlePackagePurchased(packageData) {
+    // Update user data
+    if (!this.user.purchasedPackages) {
+      this.user.purchasedPackages = [];
+    }
+    
+    this.user.purchasedPackages.push({
+      packageId: packageData.id,
+      purchaseDate: new Date().toISOString(),
+      remainingVerifications: packageData.verificationCount,
+      expiryDate: packageData.expiryDate
+    });
+    
+    // Reload dashboard data
+    this.loadDashboardData();
+  }
+  
+  /**
+   * Handle logout
+   */
+  handleLogout() {
+    userService.logoutUser().then(() => {
+      // Dispatch logout event
+      this.dispatchDashboardEvent('logout');
+    });
+  }
+  
+  /**
+   * Dispatch dashboard event
+   * @param {string} type - Event type
+   * @param {Object} data - Event data
+   */
+  dispatchDashboardEvent(type, data = null) {
+    const event = new CustomEvent('casl-dashboard', {
+      detail: {
+        type,
+        data
+      },
+      bubbles: true,
+      composed: true
+    });
+    
+    this.dispatchEvent(event);
+  }
+  
+  /**
+   * Setup event listeners
+   */
+  setupEventListeners() {
+    // Listen for package purchase success
+    window.addEventListener('casl-package-purchased', (event) => {
+      this.handlePackagePurchased(event.detail);
+    });
+  }
+}
+
+// Register the custom element
+customElements.define('casl-user-dashboard', UserDashboard);
