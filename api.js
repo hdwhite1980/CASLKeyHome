@@ -1,14 +1,16 @@
 // src/services/api.js
-import { API_BASE_URL } from '../utils/constants.js';
+import { configManager } from '../utils/ConfigManager.js';
 import { generateCASLKeyId } from '../utils/idGenerator.js';
 import { apiSecurity } from './apiSecurity.js';
+import { errorHandler } from '../utils/ErrorHandler.js';
+import { stateManager } from '../utils/StateManager.js';
 
 /**
- * API service for CASL Verification with enhanced security
+ * API service for CASL Verification with enhanced security and error handling
  */
 class ApiService {
-  constructor(baseUrl = API_BASE_URL) {
-    this.baseUrl = baseUrl;
+  constructor() {
+    this.baseUrl = configManager.getApiBaseUrl();
     this.initializeApiSecurity();
   }
 
@@ -18,8 +20,11 @@ class ApiService {
   async initializeApiSecurity() {
     try {
       await apiSecurity.initialize();
+      
+      // Update global loading state when initialized
+      stateManager.setLoading(false);
     } catch (error) {
-      console.error('Failed to initialize API security:', error);
+      errorHandler.handleError(error);
     }
   }
 
@@ -29,16 +34,32 @@ class ApiService {
    * @param {string} method - HTTP method
    * @param {Object} data - Request body data
    * @param {boolean} secure - Whether to use secure headers and encryption
+   * @param {boolean} includeCredentials - Whether to include credentials (cookies)
    * @returns {Promise<Object>} Response data
    */
-  async request(endpoint, method = 'GET', data = null, secure = true) {
+  async request(
+    endpoint, 
+    method = 'GET', 
+    data = null, 
+    secure = true,
+    includeCredentials = true
+  ) {
+    const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+    
     try {
+      // Start request tracking
+      stateManager.updateState('ui', ui => ({
+        ...ui,
+        activeRequests: [...(ui.activeRequests || []), requestId]
+      }));
+      
       const url = `${this.baseUrl}/${endpoint}`;
       
       // Base headers
       let headers = {
         'Content-Type': 'application/json',
-        'Accept-Language': this.getPreferredLanguage()
+        'Accept-Language': this.getPreferredLanguage(),
+        'X-Request-ID': requestId
       };
       
       // Add authentication headers for secure requests
@@ -49,11 +70,13 @@ class ApiService {
       // Process request data
       let processedData = data;
       if (data && secure) {
-        // For secure requests, encrypt sensitive data
-        processedData = {
-          payload: apiSecurity.encryptData(data),
-          timestamp: Date.now()
-        };
+        // For secure requests, encrypt sensitive data if enabled
+        if (configManager.get('ENCRYPT_REQUESTS', false)) {
+          processedData = {
+            payload: apiSecurity.encryptData(data),
+            timestamp: Date.now()
+          };
+        }
       }
       
       const options = {
@@ -62,38 +85,92 @@ class ApiService {
         body: processedData ? JSON.stringify(processedData) : undefined
       };
       
+      // Include credentials (cookies) if needed
+      if (includeCredentials) {
+        options.credentials = 'include';
+      }
+      
       // Execute request with timeout
       const response = await this.timeoutFetch(url, options);
       
       // Handle non-OK responses
       if (!response.ok) {
-        const errorData = await response.json().catch(() => null);
-        throw new Error(errorData?.message || `API Error: ${response.status}`);
+        // Try to parse error data
+        let errorData = null;
+        try {
+          errorData = await response.json();
+        } catch (e) {
+          // If response can't be parsed as JSON, use text
+          const errorText = await response.text();
+          errorData = {
+            message: errorText || `API Error: ${response.status}`
+          };
+        }
+        
+        // Create appropriate error type
+        if (response.status === 401 || response.status === 403) {
+          throw errorHandler.createAuthError(
+            errorData?.message || `Authentication error: ${response.status}`,
+            response.status
+          );
+        } else {
+          throw errorHandler.createApiError(
+            errorData?.message || `API Error: ${response.status}`,
+            response.status,
+            errorData
+          );
+        }
       }
       
       // Process response
-      const responseData = await response.json();
+      let responseData;
+      const contentType = response.headers.get('content-type') || '';
       
-      // Decrypt response if it's encrypted
-      if (secure && responseData.encrypted) {
-        return apiSecurity.decryptData(responseData.payload);
+      if (contentType.includes('application/json')) {
+        responseData = await response.json();
+        
+        // Decrypt response if it's encrypted
+        if (secure && responseData.encrypted) {
+          return apiSecurity.decryptData(responseData.payload);
+        }
+      } else {
+        // Handle non-JSON responses
+        const text = await response.text();
+        responseData = { data: text };
       }
       
       return responseData;
     } catch (error) {
-      console.error(`API request failed for ${endpoint}:`, error);
-      
       // Handle token expiration
-      if (error.message.includes('token expired') || error.message.includes('unauthorized')) {
-        // Clear tokens and try to get new ones
-        apiSecurity.clearTokens();
-        await apiSecurity.refreshApiToken();
-        
-        // Retry the request once
-        return this.request(endpoint, method, data, secure);
+      if (
+        error.status === 401 || 
+        error.message?.includes('token expired') || 
+        error.message?.includes('unauthorized')
+      ) {
+        // Try to refresh token and retry the request
+        try {
+          const refreshed = await apiSecurity.refreshApiToken();
+          
+          if (refreshed) {
+            // Retry the request once
+            return this.request(endpoint, method, data, secure, includeCredentials);
+          }
+        } catch (refreshError) {
+          // If refresh fails, throw the original error
+          errorHandler.handleError(error);
+          throw error;
+        }
       }
       
+      // Pass error to error handler
+      errorHandler.handleError(error);
       throw error;
+    } finally {
+      // End request tracking
+      stateManager.updateState('ui', ui => ({
+        ...ui,
+        activeRequests: (ui.activeRequests || []).filter(id => id !== requestId)
+      }));
     }
   }
   
@@ -108,7 +185,7 @@ class ApiService {
     return Promise.race([
       fetch(url, options),
       new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Request timeout')), timeout)
+        setTimeout(() => reject(errorHandler.createApiError('Request timeout', 408)), timeout)
       )
     ]);
   }
@@ -118,12 +195,18 @@ class ApiService {
    * @returns {string} Language code
    */
   getPreferredLanguage() {
-    // First check if user has set a preference
-    const userPref = localStorage.getItem('casl_language_preference');
+    // First check UI state
+    const uiState = stateManager.getState('ui');
+    if (uiState && uiState.language) {
+      return uiState.language;
+    }
+    
+    // Then check if user has set a preference
+    const userPref = localStorage.getItem(configManager.get('LOCALIZATION_KEY'));
     if (userPref) return userPref;
     
     // Otherwise use browser language
-    return navigator.language || 'en-US';
+    return navigator.language || configManager.get('DEFAULT_LANGUAGE');
   }
   
   /**
@@ -133,6 +216,12 @@ class ApiService {
    */
   async checkUserStatus(userData) {
     try {
+      // Update verification state to loading
+      stateManager.setVerification({
+        loading: true,
+        error: null
+      });
+      
       const result = await this.request('user-check', 'POST', {
         email: userData.email,
         name: userData.name,
@@ -140,8 +229,10 @@ class ApiService {
         address: userData.address
       });
       
+      let verificationData;
+      
       if (result.found) {
-        return {
+        verificationData = {
           caslKeyId: result.userData.caslKeyId,
           isExistingUser: true,
           isVerified: result.userData.isVerified,
@@ -155,7 +246,7 @@ class ApiService {
         // Generate new CASL Key ID for new user
         const newId = generateCASLKeyId();
         
-        return {
+        verificationData = {
           caslKeyId: newId,
           isExistingUser: false,
           isVerified: false,
@@ -166,7 +257,21 @@ class ApiService {
           idVerificationData: null
         };
       }
+      
+      // Update verification state
+      stateManager.setVerification({
+        ...verificationData,
+        loading: false
+      });
+      
+      return verificationData;
     } catch (error) {
+      // Update verification state with error
+      stateManager.setVerification({
+        loading: false,
+        error: error.message || 'Failed to verify user'
+      });
+      
       throw error;
     }
   }
@@ -178,10 +283,20 @@ class ApiService {
    * @returns {Promise<Object>} Upload result
    */
   async uploadScreenshot(imageData, userId) {
-    return this.request('upload', 'POST', {
-      userId,
-      imageData
-    });
+    // Validate image data and size
+    this.validateImageData(imageData);
+    
+    // Update UI state
+    stateManager.updateState('ui', { loading: true });
+    
+    try {
+      return await this.request('upload', 'POST', {
+        userId,
+        imageData
+      });
+    } finally {
+      stateManager.updateState('ui', { loading: false });
+    }
   }
 
   /**
@@ -190,7 +305,7 @@ class ApiService {
    * @returns {Promise<Object>} Status check result
    */
   async checkVerificationStatus(userId) {
-    return this.request(`status?userId=${userId}`, 'GET');
+    return this.request(`status?userId=${encodeURIComponent(userId)}`, 'GET');
   }
 
   /**
@@ -199,7 +314,23 @@ class ApiService {
    * @returns {Promise<Object>} Submission result
    */
   async submitVerification(verificationData) {
-    return this.request('verify', 'POST', verificationData);
+    // Update UI state
+    stateManager.updateState('ui', { loading: true });
+    stateManager.updateState('results', { isSubmitted: false });
+    
+    try {
+      const result = await this.request('verify', 'POST', verificationData);
+      
+      // Update results state
+      stateManager.updateState('results', {
+        isSubmitted: true,
+        ...result
+      });
+      
+      return result;
+    } finally {
+      stateManager.updateState('ui', { loading: false });
+    }
   }
   
   /**
@@ -210,11 +341,22 @@ class ApiService {
    * @returns {Promise<Object>} Verification result
    */
   async verifyGovernmentId(idImageData, selfieImageData, userId) {
-    return this.request('verify-id', 'POST', {
-      userId,
-      idImageData,
-      selfieImageData
-    });
+    // Validate image data and size
+    this.validateImageData(idImageData);
+    this.validateImageData(selfieImageData);
+    
+    // Update UI state
+    stateManager.updateState('ui', { loading: true });
+    
+    try {
+      return await this.request('verify-id', 'POST', {
+        userId,
+        idImageData,
+        selfieImageData
+      });
+    } finally {
+      stateManager.updateState('ui', { loading: false });
+    }
   }
   
   /**
@@ -224,10 +366,17 @@ class ApiService {
    * @returns {Promise<Object>} Verification result with code ID
    */
   async requestPhoneVerification(phoneNumber, userId) {
-    return this.request('verify-phone/request', 'POST', {
-      userId,
-      phoneNumber
-    });
+    // Update UI state
+    stateManager.updateState('ui', { loading: true });
+    
+    try {
+      return await this.request('verify-phone/request', 'POST', {
+        userId,
+        phoneNumber
+      });
+    } finally {
+      stateManager.updateState('ui', { loading: false });
+    }
   }
   
   /**
@@ -238,11 +387,18 @@ class ApiService {
    * @returns {Promise<Object>} Verification result
    */
   async verifyPhoneCode(code, verificationId, userId) {
-    return this.request('verify-phone/verify', 'POST', {
-      userId,
-      verificationId,
-      code
-    });
+    // Update UI state
+    stateManager.updateState('ui', { loading: true });
+    
+    try {
+      return await this.request('verify-phone/verify', 'POST', {
+        userId,
+        verificationId,
+        code
+      });
+    } finally {
+      stateManager.updateState('ui', { loading: false });
+    }
   }
   
   /**
@@ -254,12 +410,19 @@ class ApiService {
    * @returns {Promise<Object>} Verification result
    */
   async verifySocialMedia(platform, profileUrl, accessToken, userId) {
-    return this.request('verify-social', 'POST', {
-      userId,
-      platform,
-      profileUrl,
-      accessToken
-    });
+    // Update UI state
+    stateManager.updateState('ui', { loading: true });
+    
+    try {
+      return await this.request('verify-social', 'POST', {
+        userId,
+        platform,
+        profileUrl,
+        accessToken
+      });
+    } finally {
+      stateManager.updateState('ui', { loading: false });
+    }
   }
   
   /**
@@ -275,9 +438,43 @@ class ApiService {
    * @param {string} languageCode - ISO language code
    */
   setLanguagePreference(languageCode) {
-    localStorage.setItem('casl_language_preference', languageCode);
+    localStorage.setItem(configManager.get('LOCALIZATION_KEY'), languageCode);
+    
+    // Update UI state
+    stateManager.updateState('ui', { language: languageCode });
+  }
+  
+  /**
+   * Validate image data for uploads
+   * @param {string} imageData - Base64 encoded image data
+   * @throws {Error} If validation fails
+   */
+  validateImageData(imageData) {
+    if (!imageData) {
+      throw errorHandler.createValidationError('Image data is required');
+    }
+    
+    // Check if it's a valid data URL
+    if (!imageData.startsWith('data:image/')) {
+      throw errorHandler.createValidationError('Invalid image data format');
+    }
+    
+    // Check size
+    const maxSize = configManager.get('MAX_SCREENSHOT_SIZE');
+    const sizeInBytes = Math.ceil((imageData.length * 3) / 4);
+    
+    if (sizeInBytes > maxSize) {
+      throw errorHandler.createValidationError(
+        `Image size exceeds maximum allowed size of ${Math.floor(maxSize / (1024 * 1024))}MB`
+      );
+    }
+    
+    // Check allowed types
+    const allowedTypes = configManager.getAllowedImageTypes();
+    const typeMatch = imageData.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,/);
+    
+    if (!typeMatch || !allowedTypes.includes(typeMatch[1])) {
+      throw errorHandler.createValidationError('Image type not allowed');
+    }
   }
 }
-
-// Export a singleton instance
-export const apiService = new ApiService();
