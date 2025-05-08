@@ -1,4 +1,4 @@
-// src/components/CASLVerification.js
+	// src/components/CASLVerification.js
 import { getStyles } from './common/Styles.js';
 import { renderProgressSteps } from './common/ProgressSteps.js';
 import { renderAlerts, renderTrustPreview, renderScreenReaderAnnouncement } from './common/Alerts.js';
@@ -49,8 +49,131 @@ import {
 import { VERIFICATION_STATUSES, FORM_STEPS } from '../utils/constants.js';
 
 /**
+ * Performance monitoring utility
+ */
+class PerformanceMonitor {
+  constructor() {
+    this.metrics = {};
+    this.thresholds = {
+      render: 50, // ms
+      api: 1000,  // ms
+      memory: 50  // MB
+    };
+    
+    // Initialize memory monitoring if available
+    this.supportsMemoryAPI = !!(
+      performance && 
+      performance.memory && 
+      performance.memory.usedJSHeapSize
+    );
+  }
+  
+  /**
+   * Start timing an operation
+   * @param {string} operation - Name of operation to time
+   */
+  startTimer(operation) {
+    if (!this.metrics[operation]) {
+      this.metrics[operation] = {};
+    }
+    this.metrics[operation].startTime = performance.now();
+  }
+  
+  /**
+   * End timing an operation
+   * @param {string} operation - Name of operation to time
+   * @returns {number} Duration in milliseconds
+   */
+  endTimer(operation) {
+    if (this.metrics[operation]?.startTime) {
+      const duration = performance.now() - this.metrics[operation].startTime;
+      
+      // Store statistics
+      if (!this.metrics[operation].durations) {
+        this.metrics[operation].durations = [];
+        this.metrics[operation].total = 0;
+        this.metrics[operation].count = 0;
+      }
+      
+      this.metrics[operation].durations.push(duration);
+      this.metrics[operation].total += duration;
+      this.metrics[operation].count++;
+      
+      // Cap stored durations
+      if (this.metrics[operation].durations.length > 100) {
+        const oldestValue = this.metrics[operation].durations.shift();
+        this.metrics[operation].total -= oldestValue;
+        this.metrics[operation].count--;
+      }
+      
+      // Check if this exceeds threshold
+      const threshold = this.thresholds[operation] || 100;
+      if (duration > threshold) {
+        console.warn(`Performance warning: ${operation} took ${duration.toFixed(2)}ms (threshold: ${threshold}ms)`);
+      }
+      
+      return duration;
+    }
+    return 0;
+  }
+  
+  /**
+   * Measure memory usage
+   * @returns {Object|null} Memory info or null if not supported
+   */
+  checkMemoryUsage() {
+    if (this.supportsMemoryAPI) {
+      const memory = {
+        total: performance.memory.totalJSHeapSize / (1024 * 1024),
+        used: performance.memory.usedJSHeapSize / (1024 * 1024),
+        limit: performance.memory.jsHeapSizeLimit / (1024 * 1024)
+      };
+      
+      // Check for high memory usage
+      if (memory.used > this.thresholds.memory) {
+        console.warn(`Memory usage warning: ${memory.used.toFixed(2)}MB used (threshold: ${this.thresholds.memory}MB)`);
+      }
+      
+      return memory;
+    }
+    return null;
+  }
+  
+  /**
+   * Get all metrics for debugging
+   * @returns {Object} All collected metrics
+   */
+  getAllMetrics() {
+    const result = {};
+    
+    // Calculate averages for all operations
+    Object.keys(this.metrics).forEach(op => {
+      if (this.metrics[op].count) {
+        result[op] = {
+          average: this.metrics[op].total / this.metrics[op].count,
+          count: this.metrics[op].count,
+          max: Math.max(...(this.metrics[op].durations || [0])),
+          latest: this.metrics[op].durations?.slice(-1)[0] || 0
+        };
+      }
+    });
+    
+    // Add memory if available
+    const memory = this.checkMemoryUsage();
+    if (memory) {
+      result.memory = memory;
+    }
+    
+    return result;
+  }
+}
+
+// Create singleton instance
+const performanceMonitor = new PerformanceMonitor();
+
+/**
  * Enhanced CASL Key Verification component with comprehensive accessibility features
- * Uses centralized error handling, state management, and accessibility enhancements
+ * Optimized for production performance
  */
 export class CASLVerification extends HTMLElement {
   /**
@@ -60,6 +183,13 @@ export class CASLVerification extends HTMLElement {
     super();
     this.attachShadow({ mode: 'open' });
     
+    // Track render count for performance monitoring
+    this._renderCount = 0;
+    this._validationTimer = null;
+    this._verificationPollInterval = null;
+    this._prevRenderState = null;
+    this._trustPreviewCache = {};
+    
     // Initialize component ID for event handling
     this.componentId = eventManager.initComponent(this);
     
@@ -68,6 +198,13 @@ export class CASLVerification extends HTMLElement {
     
     // Track first render for initial instructions
     this.firstRender = true;
+    
+    // Track UX metrics
+    this.uxMetrics = {
+      formStarted: false,
+      stepsCompleted: new Set(),
+      startTime: performance.now()
+    };
     
     // Initialize state by subscribing to state manager
     this.initializeState();
@@ -81,21 +218,35 @@ export class CASLVerification extends HTMLElement {
     
     // Add skip link for keyboard users
     this.addSkipLink();
+    
+    // Enable debug mode in development or with debug parameter
+    if (process.env.NODE_ENV === 'development' || 
+        window.location.search.includes('debug=true')) {
+      this.enableDebugMode();
+    }
   }
   
   /**
-   * Initialize component state
+   * Initialize component state with optimized state subscriptions
    */
   initializeState() {
-    // Subscribe to global state sections
+    // Subscribe to global state sections with optimized update handling
     this.unsubscribeHandlers = [];
     
     // Subscribe to form data state
     this.unsubscribeHandlers.push(
       stateManager.subscribe('formData', state => {
+        const prevFormData = this.formData;
         this.formData = state;
-        this.validateForm();
-        this.saveFormData();
+        
+        // Only validate if important data has changed
+        const fieldsChanged = this.hasImportantFieldsChanged(prevFormData, state);
+        if (fieldsChanged) {
+          this.validateForm();
+          // Save form data with debounce
+          this.debounceSaveFormData();
+        }
+        
         this.render();
       })
     );
@@ -112,21 +263,27 @@ export class CASLVerification extends HTMLElement {
     // Subscribe to UI state
     this.unsubscribeHandlers.push(
       stateManager.subscribe('ui', state => {
-        this.isLoading = state.loading;
-        this.apiError = state.alert;
-        this.render();
+        // Only update if loading or alert status changed
+        if (this.isLoading !== state.loading || this.apiError !== state.alert) {
+          this.isLoading = state.loading;
+          this.apiError = state.alert;
+          this.render();
+        }
       })
     );
     
     // Subscribe to results state
     this.unsubscribeHandlers.push(
       stateManager.subscribe('results', state => {
-        this.submitted = state.isSubmitted;
-        this.score = state.score;
-        this.trustLevel = state.trustLevel;
-        this.message = state.message;
-        this.adjustments = state.adjustments;
-        this.render();
+        // Only update if submission status changed
+        if (this.submitted !== state.isSubmitted) {
+          this.submitted = state.isSubmitted;
+          this.score = state.score;
+          this.trustLevel = state.trustLevel;
+          this.message = state.message;
+          this.adjustments = state.adjustments;
+          this.render();
+        }
       })
     );
     
@@ -167,39 +324,76 @@ export class CASLVerification extends HTMLElement {
   }
   
   /**
-   * Load trust preview from storage
+   * Compare two form data objects to see if important fields changed
+   * @param {Object} oldData - Previous form data
+   * @param {Object} newData - New form data
+   * @returns {boolean} Whether important fields changed
    */
-  loadTrustPreview() {
-    try {
-      const storageKey = `${configManager.get('STORAGE_PREFIX', 'casl_')}trust_preview`;
-      const previewStr = localStorage.getItem(storageKey);
-      
-      if (previewStr) {
-        this.trustPreview = JSON.parse(previewStr);
-      }
-    } catch (error) {
-      errorHandler.handleError(error);
+  hasImportantFieldsChanged(oldData, newData) {
+    if (!oldData) return true;
+    
+    // Check if current step changed
+    if (oldData.currentStep !== newData.currentStep) return true;
+    
+    // Only check fields for current step
+    const fieldsToCheck = [];
+    
+    switch (this.currentStep) {
+      case 0: // User Identification
+        fieldsToCheck.push('name', 'email', 'phone', 'address', 'consentToBackgroundCheck');
+        break;
+      case 1: // Booking Info
+        fieldsToCheck.push('platform', 'listingLink', 'checkInDate', 'checkOutDate');
+        break;
+      case 2: // Stay Intent
+        fieldsToCheck.push('stayPurpose', 'totalGuests', 'travelingNearHome', 'usedSTRBefore');
+        break;
+      case 3: // Agreement
+        fieldsToCheck.push('agreeToRules', 'agreeNoParties', 'understandFlagging');
+        break;
     }
+    
+    // Check if any important field changed
+    return fieldsToCheck.some(field => oldData[field] !== newData[field]);
   }
   
   /**
-   * Save trust preview to storage
-   * @param {Object} previewData - Trust preview data
+   * Check if render is necessary based on state changes
+   * @returns {boolean} Whether render is needed
    */
-  saveTrustPreview(previewData) {
-    try {
-      const storageKey = `${configManager.get('STORAGE_PREFIX', 'casl_')}trust_preview`;
-      localStorage.setItem(storageKey, JSON.stringify(previewData));
-      this.trustPreview = previewData;
-    } catch (error) {
-      errorHandler.handleError(error);
+  shouldUpdateRender() {
+    // Store previous values to compare
+    if (!this._prevRenderState) {
+      this._prevRenderState = {};
     }
+    
+    // Key state values that affect rendering
+    const currentState = {
+      currentStep: this.currentStep,
+      isLoading: this.isLoading,
+      apiError: this.apiError !== null,
+      submitted: this.submitted,
+      showScreenshotUpload: this.showScreenshotUpload,
+      verificationStatus: this.verificationStatus,
+      errorCount: Object.keys(this.errors).length,
+      showVerificationMethods: this.showVerificationMethods
+    };
+    
+    // Simple deep comparison of previous and current state
+    const shouldUpdate = !this._prevRenderState.currentState || 
+      JSON.stringify(currentState) !== JSON.stringify(this._prevRenderState.currentState);
+    
+    // Store current state for next comparison
+    this._prevRenderState.currentState = currentState;
+    
+    return shouldUpdate;
   }
   
   /**
    * Initialize services
    */
   async initializeServices() {
+    performanceMonitor.startTimer('services_init');
     try {
       // Initialize API security
       await apiSecurity.initialize();
@@ -211,7 +405,19 @@ export class CASLVerification extends HTMLElement {
       this.loadSavedData();
     } catch (error) {
       errorHandler.handleError(error);
+    } finally {
+      performanceMonitor.endTimer('services_init');
     }
+  }
+  
+  /**
+   * Debounced form data saving
+   */
+  debounceSaveFormData() {
+    clearTimeout(this._saveFormDataTimer);
+    this._saveFormDataTimer = setTimeout(() => {
+      this.saveFormData();
+    }, 300);
   }
   
   /**
@@ -228,16 +434,36 @@ export class CASLVerification extends HTMLElement {
    * When the element is removed from the DOM
    */
   disconnectedCallback() {
+    // Log performance before cleanup
+    this.logPerformanceReport();
+    
     // Remove state subscriptions
     this.unsubscribeHandlers.forEach(unsubscribe => unsubscribe());
     
     // Clean up event handling
     eventManager.cleanupComponent(this.componentId);
     
+    // Clear any pending timers
+    clearTimeout(this._validationTimer);
+    clearTimeout(this._saveFormDataTimer);
+    
+    // Clear polling intervals if any are active
+    if (this._verificationPollInterval) {
+      clearInterval(this._verificationPollInterval);
+      this._verificationPollInterval = null;
+    }
+    
+    // Clear any other resources
+    this.screenshotData = null;
+    
     // Remove live region
     if (this.liveRegion.parentNode) {
       this.liveRegion.parentNode.removeChild(this.liveRegion);
     }
+    
+    // Force a garbage collection hint
+    this._prevRenderState = null;
+    this._trustPreviewCache = null;
   }
   
   /**
@@ -248,9 +474,78 @@ export class CASLVerification extends HTMLElement {
   }
   
   /**
-   * Render the component with accessibility enhancements
+   * Log performance report
+   */
+  logPerformanceReport() {
+    const metrics = performanceMonitor.getAllMetrics();
+    console.group('CASL Verification Performance Report');
+    console.log('Render time (avg):', metrics.render?.average.toFixed(2) + 'ms');
+    console.log('API calls (avg):', Object.keys(metrics)
+      .filter(k => k.startsWith('api_'))
+      .map(k => `${k}: ${metrics[k].average.toFixed(2)}ms`)
+      .join(', '));
+    console.log('Memory usage:', metrics.memory?.used.toFixed(2) + 'MB');
+    console.log('Steps completed:', Array.from(this.uxMetrics.stepsCompleted).join(', '));
+    console.log('Render count:', this._renderCount);
+    console.groupEnd();
+  }
+  
+  /**
+   * Enable debug mode
+   */
+  enableDebugMode() {
+    if (!window._CASLDebugTools) {
+      window._CASLDebugTools = {
+        // Get component state
+        getState: () => ({
+          formData: this.formData,
+          userIdentification: this.userIdentification,
+          currentStep: this.currentStep,
+          errors: this.errors,
+          verificationStatus: this.verificationStatus
+        }),
+        
+        // Get performance metrics
+        getPerformanceMetrics: () => performanceMonitor.getAllMetrics(),
+        
+        // Force render
+        forceRender: () => this.render(),
+        
+        // Reset component
+        reset: () => this.handleReset(),
+        
+        // Show component info
+        info: () => console.table({
+          componentId: this.componentId,
+          renderCount: this._renderCount || 0,
+          memoryUsage: performanceMonitor.checkMemoryUsage()?.used + 'MB',
+          currentStep: this.currentStep,
+          errorCount: Object.keys(this.errors).length
+        })
+      };
+      
+      console.info('CASL Debug Tools enabled. Access via window._CASLDebugTools');
+    }
+    
+    return window._CASLDebugTools;
+  }
+  
+  /**
+   * Render the component with accessibility enhancements and performance optimizations
    */
   render() {
+    // Skip re-render if nothing important changed
+    if (!this.shouldUpdateRender()) {
+      return;
+    }
+    
+    // Increment render count for monitoring
+    this._renderCount = (this._renderCount || 0) + 1;
+    
+    // Start performance timer
+    performanceMonitor.startTimer('render');
+    performance.mark('render_start');
+    
     const content = this.submitted ? this.renderResults() : this.renderForm();
     
     let html = `
@@ -285,38 +580,15 @@ export class CASLVerification extends HTMLElement {
     if (this.firstRender) {
       this.firstRender = false;
     }
-  }
-  
-  /**
-   * Announce status changes to screen readers
-   */
-  announceStatusChanges() {
-    // On first render, announce instructions
-    if (this.firstRender) {
-      accessibilityHelper.announce(accessibilityMessages.formInstructions, 'polite');
-      return;
-    }
-
-    if (this.isLoading) {
-      const operation = this.currentStep === 0 ? 'verification status' : 
-                      this.currentStep === 3 ? 'submission' : 'data';
-      accessibilityHelper.announce(accessibilityMessages.loading(operation), 'polite');
-    } else if (this.apiError) {
-      accessibilityHelper.announce(this.apiError, 'assertive');
-    } else if (this.submitted) {
-      accessibilityHelper.announce(
-        accessibilityMessages.submissionComplete(
-          this.userIdentification.caslKeyId,
-          this.score,
-          this.trustLevel ? FORM_STEPS[this.trustLevel] : 'Unknown'
-        ), 
-        'polite'
-      );
-    } else if (this.errors && Object.keys(this.errors).length > 0) {
-      accessibilityHelper.announce(
-        accessibilityMessages.formError(Object.keys(this.errors).length),
-        'assertive'
-      );
+    
+    // End performance timer
+    performanceMonitor.endTimer('render');
+    performance.mark('render_end');
+    performance.measure('render', 'render_start', 'render_end');
+    
+    // Check memory usage periodically
+    if (this._renderCount % 10 === 0) {
+      performanceMonitor.checkMemoryUsage();
     }
   }
   
@@ -392,10 +664,44 @@ export class CASLVerification extends HTMLElement {
   }
   
   /**
-   * Handle input changes with accessibility enhancements
+   * Announce status changes to screen readers
+   */
+  announceStatusChanges() {
+    // On first render, announce instructions
+    if (this.firstRender) {
+      accessibilityHelper.announce(accessibilityMessages.formInstructions, 'polite');
+      return;
+    }
+
+    if (this.isLoading) {
+      const operation = this.currentStep === 0 ? 'verification status' : 
+                      this.currentStep === 3 ? 'submission' : 'data';
+      accessibilityHelper.announce(accessibilityMessages.loading(operation), 'polite');
+    } else if (this.apiError) {
+      accessibilityHelper.announce(this.apiError, 'assertive');
+    } else if (this.submitted) {
+      accessibilityHelper.announce(
+        accessibilityMessages.submissionComplete(
+          this.userIdentification.caslKeyId,
+          this.score,
+          this.trustLevel ? FORM_STEPS[this.trustLevel] : 'Unknown'
+        ), 
+        'polite'
+      );
+    } else if (this.errors && Object.keys(this.errors).length > 0) {
+      accessibilityHelper.announce(
+        accessibilityMessages.formError(Object.keys(this.errors).length),
+        'assertive'
+      );
+    }
+  }
+  
+  /**
+   * Handle input changes with accessibility enhancements and debounced validation
    * @param {Event} event - Input change event
    */
   handleInputChange(event) {
+    performance.mark('input_change_start');
     const { name, value, type, checked } = event.target;
     
     // Handle different input types
@@ -417,6 +723,18 @@ export class CASLVerification extends HTMLElement {
     // Update global state
     stateManager.updateFormData(updatedFormData);
     
+    // Debounce validation for text inputs
+    if (type === 'text' || type === 'email' || type === 'tel' || type === 'url') {
+      clearTimeout(this._validationTimer);
+      this._validationTimer = setTimeout(() => {
+        this.validateForm();
+        this.render();
+      }, 300); // 300ms debounce
+    } else {
+      // For checkboxes, selects, etc., validate immediately
+      this.validateForm();
+    }
+    
     // If background check consent changes, we may need to update preview
     if (name === 'consentToBackgroundCheck' && checked) {
       this.updateTrustPreview();
@@ -424,6 +742,9 @@ export class CASLVerification extends HTMLElement {
       // Announce to screen readers
       accessibilityHelper.announce('Background check consent provided. This will be used for identity verification.', 'polite');
     }
+    
+    performance.mark('input_change_end');
+    performance.measure('input_change', 'input_change_start', 'input_change_end');
   }
   
   /**
@@ -495,10 +816,54 @@ export class CASLVerification extends HTMLElement {
   }
   
   /**
+   * Compress image before upload
+   * @param {string} dataUrl - Image data URL
+   * @param {number} maxWidth - Maximum width in pixels
+   * @param {number} quality - JPEG quality (0-1)
+   * @returns {Promise<string>} Compressed image data URL
+   */
+  async compressImage(dataUrl, maxWidth = 1200, quality = 0.8) {
+    return new Promise((resolve, reject) => {
+      // Skip compression for small images
+      if (dataUrl.length < 100000) { // ~100KB
+        resolve(dataUrl);
+        return;
+      }
+      
+      const img = new Image();
+      img.onload = () => {
+        // Calculate new dimensions
+        let width = img.width;
+        let height = img.height;
+        
+        if (width > maxWidth) {
+          height = (height * maxWidth) / width;
+          width = maxWidth;
+        }
+        
+        // Create canvas and draw image
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        // Convert to compressed JPEG
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      
+      img.onerror = reject;
+      img.src = dataUrl;
+    });
+  }
+  
+  /**
    * Handle screenshot upload with accessibility enhancements
    * @param {Event} event - File input change event
    */
-  handleScreenshotUpload(event) {
+  async handleScreenshotUpload(event) {
+    performance.mark('screenshot_upload_start');
     const file = event.target.files[0];
     if (!file) return;
     
@@ -519,13 +884,22 @@ export class CASLVerification extends HTMLElement {
       
       // Read the file as data URL
       const reader = new FileReader();
-      reader.onload = (e) => {
-        this.screenshotData = e.target.result;
-        
-        // Announce to screen readers
-        accessibilityHelper.announce(accessibilityMessages.screenshotUploaded, 'polite');
-        
-        this.render();
+      reader.onload = async (e) => {
+        // Compress image before storing
+        try {
+          const compressedImage = await this.compressImage(e.target.result);
+          this.screenshotData = compressedImage;
+          
+          // Announce to screen readers
+          accessibilityHelper.announce(accessibilityMessages.screenshotUploaded, 'polite');
+          
+          this.render();
+        } catch (compressionError) {
+          // Fallback to original if compression fails
+          console.warn('Image compression failed, using original:', compressionError);
+          this.screenshotData = e.target.result;
+          this.render();
+        }
       };
       reader.readAsDataURL(file);
     } catch (error) {
@@ -535,415 +909,525 @@ export class CASLVerification extends HTMLElement {
       // Announce error to screen readers
       accessibilityHelper.announce(`Error uploading screenshot: ${errorHandler.getUserFriendlyMessage(error)}`, 'assertive');
     }
+    
+    performance.mark('screenshot_upload_end');
+    performance.measure('screenshot_upload', 'screenshot_upload_start', 'screenshot_upload_end');
   }
   
   /**
-   * Handle drag over event for screenshot drop zone
-   * @param {Event} event - Drag over event
-   */
-  handleDragOver(event) {
-    event.preventDefault();
-    event.stopPropagation();
-    const dropzone = this.shadowRoot.getElementById('screenshot-dropzone');
-    if (dropzone) {
-      dropzone.classList.add('drag-over');
-      
-      // Set aria-dropeffect for accessibility
-      dropzone.setAttribute('aria-dropeffect', 'copy');
-    }
-  }
-  
-  /**
-   * Handle drag leave event for screenshot drop zone
-   * @param {Event} event - Drag leave event
-   */
-  handleDragLeave(event) {
-    event.preventDefault();
-    event.stopPropagation();
-    const dropzone = this.shadowRoot.getElementById('screenshot-dropzone');
-    if (dropzone) {
-      dropzone.classList.remove('drag-over');
-      
-      // Reset aria-dropeffect
-      dropzone.setAttribute('aria-dropeffect', 'none');
-    }
-  }
-  
-  /**
-   * Handle drop event for screenshot drop zone
-   * @param {Event} event - Drop event
-   */
-  handleDrop(event) {
-    event.preventDefault();
-    event.stopPropagation();
-    
-    const dropzone = this.shadowRoot.getElementById('screenshot-dropzone');
-    if (dropzone) {
-      dropzone.classList.remove('drag-over');
-      
-      // Reset aria-dropeffect
-      dropzone.setAttribute('aria-dropeffect', 'none');
-    }
-    
-    const file = event.dataTransfer.files[0];
-    if (!file) return;
-    
-    // Use the same upload handler for dropped files
-    this.handleScreenshotUpload({ target: { files: [file] } });
-  }
-  
-  /**
-   * Clear uploaded screenshot
-   */
-  clearScreenshot() {
-    this.screenshotData = null;
-    
-    // Announce to screen readers
-    accessibilityHelper.announce(accessibilityMessages.screenshotRemoved, 'polite');
-    
-    this.render();
-  }
-  
-  /**
-   * Upload screenshot to API
-   * @returns {Promise<boolean>} Success status
-   */
-  async uploadScreenshot() {
-    if (!this.screenshotData) {
-      stateManager.showAlert(t('errors.noScreenshot'));
-      
-      // Announce error to screen readers
-      accessibilityHelper.announce(t('errors.noScreenshot'), 'assertive');
-      
-      return false;
-    }
-    
-    stateManager.setLoading(true);
-    this.verificationStatus = VERIFICATION_STATUSES.PROCESSING;
-    
-    // Announce to screen readers
-    accessibilityHelper.announce(accessibilityMessages.processingScreenshot, 'polite');
-    
-    this.render();
-    
-    try {
-      // Generate a unique user ID if not exists
-      const userId = this.userIdentification.caslKeyId || `user_${Date.now()}`;
-      
-      // Call API to upload screenshot
-      const result = await apiService.uploadScreenshot(this.screenshotData, userId);
-      
-      // Start polling for verification status
-      this.startVerificationStatusPolling(userId);
-      
-      return true;
-    } catch (error) {
-      errorHandler.handleError(error);
-      stateManager.showAlert(errorHandler.getUserFriendlyMessage(error));
-      
-      // Announce error to screen readers
-      accessibilityHelper.announce(`Error uploading screenshot: ${errorHandler.getUserFriendlyMessage(error)}`, 'assertive');
-      
-      stateManager.setLoading(false);
-      return false;
-    }
-  }
-  
-  /**
-   * Start polling for verification status
-   * @param {string} userId - User ID for verification
-   */
-  startVerificationStatusPolling(userId) {
-    // Poll interval from config
-    const pollInterval = configManager.get('VERIFICATION_POLL_INTERVAL', 3000);
-    
-    // Create interval for polling
-    const intervalId = setInterval(async () => {
-      try {
-        const result = await apiService.checkVerificationStatus(userId);
-        
-        // Update the verification status
-        this.verificationStatus = result.status;
-        
-        // If verification is complete (not processing), stop polling
-        if (result.status !== VERIFICATION_STATUSES.PROCESSING) {
-          clearInterval(intervalId);
-          stateManager.setLoading(false);
-          
-          // If verified, update user identification
-          if (result.status === VERIFICATION_STATUSES.VERIFIED) {
-            stateManager.setVerification({
-              ...this.userIdentification,
-              isVerified: true,
-              verificationType: 'screenshot',
-              platformData: result.verificationDetails || null
-            });
-            
-            // Update trust preview
-            this.updateTrustPreview();
-            
-            // Announce success to screen readers
-            accessibilityHelper.announce(accessibilityMessages.verificationSuccess, 'polite');
-          } else {
-            // Announce failure or review status
-            if (result.status === VERIFICATION_STATUSES.MANUAL_REVIEW) {
-              accessibilityHelper.announce(t('accessibility.manualReviewRequired'), 'polite');
-            } else {
-              accessibilityHelper.announce(t('accessibility.verificationFailed'), 'assertive');
-            }
-          }
-        }
-      } catch (error) {
-        errorHandler.handleError(error);
-        clearInterval(intervalId);
-        stateManager.showAlert(errorHandler.getUserFriendlyMessage(error));
-        
-        // Announce error to screen readers
-        accessibilityHelper.announce(`Error checking verification status: ${errorHandler.getUserFriendlyMessage(error)}`, 'assertive');
-        
-        stateManager.setLoading(false);
-      }
-    }, pollInterval);
-  }
-  
-  /**
-   * Update the trust preview (what hosts will see)
-   */
-  updateTrustPreview() {
-    // Calculate initial score based on current data
-    const result = calculateScore(this.formData, this.userIdentification);
-    const trustLevel = getTrustLevel(result.score);
-    
-    // Generate a host-facing summary
-    const previewData = {
-      caslKeyId: this.userIdentification.caslKeyId || 'Pending',
-      trustLevel,
-      scoreRange: result.score >= 85 ? '85-100' : 
-                 result.score >= 70 ? '70-84' : 
-                 result.score >= 50 ? '50-69' : 'Below 50',
-      platformVerified: !!this.userIdentification.verificationType,
-      backgroundCheckCompleted: !!this.userIdentification.backgroundCheckStatus,
-      flags: {
-        localBooking: this.formData.travelingNearHome || false,
-        highGuestCount: this.formData.totalGuests > 5 || false,
-        noSTRHistory: !this.formData.usedSTRBefore || false
-      }
-    };
-    
-    // Save preview
-    this.saveTrustPreview(previewData);
-    this.render();
-  }
-  
-  /**
-   * Validate form based on current step
-   */
-  validateForm() {
-    let stepErrors = {};
-    
-    // Validate current step
-    switch (this.currentStep) {
-      case 0:
-        stepErrors = validateUserIdentification(
-          this.formData, 
-          this.userIdentification, 
-          this.verificationStatus
-        );
-        break;
-      case 1:
-        stepErrors = validateBookingInfo(this.formData);
-        break;
-      case 2:
-        stepErrors = validateStayIntent(this.formData);
-        break;
-      case 3:
-        stepErrors = validateAgreement(this.formData);
-        break;
-    }
-    
-    this.errors = stepErrors;
-    this.isFormValid = isStepValid(stepErrors);
-  }
-  
-  /**
-   * Handle next step button click with enhanced accessibility
-   */
-  async handleNextStep() {
-    if (!this.isFormValid) {
-      // Announce errors to screen readers
-      accessibilityHelper.announce(accessibilityMessages.formError(Object.keys(this.errors).length), 'assertive');
-      
-      // Focus the first input with an error
-      this.focusFirstError();
-      return;
-    }
-    
-    // Special handling for first step (user identification)
-    if (this.currentStep === 0) {
-      // If screenshot verification is shown and there's data, upload it first
-      if (this.showScreenshotUpload && this.screenshotData && 
-          this.verificationStatus !== VERIFICATION_STATUSES.VERIFIED && 
-          this.verificationStatus !== VERIFICATION_STATUSES.MANUAL_REVIEW) {
-        const uploadSuccess = await this.uploadScreenshot();
-        if (!uploadSuccess) return;
-      }
-      
-      // Check user status
-      const userVerified = await this.handleCheckUser();
-      if (!userVerified) return;
-      
-      // Handle background check if needed
-      if (this.formData.consentToBackgroundCheck && 
-          !this.userIdentification.backgroundCheckStatus) {
-        await this.initiateBackgroundCheck();
-      }
-      
-      // Update trust preview
-      this.updateTrustPreview();
-    }
-    
-    if (this.currentStep < FORM_STEPS.length - 1) {
-      // Move to next step
-      this.currentStep += 1;
-      
-      // Update form data state
-      stateManager.updateFormData({
-        ...this.formData,
-        currentStep: this.currentStep
-      });
-      
-      // Validate the new step
-      this.validateForm();
-      
-      // Announce step change to screen readers
-      accessibilityHelper.announce(
-        accessibilityMessages.stepChange(this.currentStep + 1, FORM_STEPS.length),
-        'polite'
-      );
-    } else {
-      // Submit form
-      this.handleSubmit();
-    }
-  }
-  
-  /**
-   * Focus the first input with an error
-   */
-  focusFirstError() {
-    setTimeout(() => {
-      const errorKeys = Object.keys(this.errors);
-      if (errorKeys.length > 0) {
-        const firstErrorKey = errorKeys[0];
-        const errorField = this.shadowRoot.querySelector(`[name="${firstErrorKey}"]`);
-        if (errorField) {
-          errorField.focus();
-        }
-      }
-    }, 100);
-  }
-  
-  /**
-   * Handle previous step button click with enhanced accessibility
-   */
-  handlePreviousStep() {
-    if (this.currentStep > 0) {
-      this.currentStep -= 1;
-      
-      // Update form data state
-      stateManager.updateFormData({
-        ...this.formData,
-        currentStep: this.currentStep
-      });
-      
-      // Validate the new step
-      this.validateForm();
-      
-      // Announce step change to screen readers
-      accessibilityHelper.announce(
-        accessibilityMessages.stepChange(this.currentStep + 1, FORM_STEPS.length),
-        'polite'
-      );
-    }
-  }
-  
-  /**
-   * Check user verification with API
-   * @returns {Promise<boolean>} Success status
-   */
-  async handleCheckUser() {
-    if (!this.formData.email) {
-      stateManager.showAlert(t('errors.emailRequired'));
-      
-      // Announce error to screen readers
-      accessibilityHelper.announce(t('errors.emailRequired'), 'assertive');
-      
-      return false;
-    }
-    
-    stateManager.setLoading(true);
-    
-    // Announce to screen readers
-    accessibilityHelper.announce(accessibilityMessages.verifying, 'polite');
-    
-    try {
-      const userData = {
-        email: this.formData.email,
-        name: this.formData.name,
-        phone: this.formData.phone,
-        address: this.formData.address
-      };
-      
-      // Update verification state to checking
-      stateManager.setVerification({
-        ...this.userIdentification,
-        isChecking: true,
-        error: null
-      });
-      
-      // Check user status with API
-      const userIdentification = await apiService.checkUserStatus(userData);
-      
-      // Update with verification status from screenshot if we already verified them
-      const isVerified = this.verificationStatus === VERIFICATION_STATUSES.VERIFIED || 
-                         this.verificationStatus === VERIFICATION_STATUSES.MANUAL_REVIEW;
-      
-      if (isVerified && !userIdentification.isVerified) {
-        userIdentification.isVerified = true;
-        userIdentification.verificationType = 'screenshot';
-      }
-      
-      // Update global state
-      stateManager.setVerification({
-        ...userIdentification,
-        isChecking: false
-      });
-      
-      // Announce to screen readers
-      if (userIdentification.isExistingUser) {
-        accessibilityHelper.announce(`Welcome back! We found your existing CASL Key ID: ${userIdentification.caslKeyId}`, 'polite');
-      } else {
-        accessibilityHelper.announce('User verification completed successfully.', 'polite');
-      }
-      
-      return true;
-    } catch (error) {
-      errorHandler.handleError(error);
-      
-      // Update UI state with error
-      stateManager.showAlert(errorHandler.getUserFriendlyMessage(error));
-      
-      // Update verification state with error
-      stateManager.setVerification({
-        ...this.userIdentification,
-        isChecking: false,
-        error: error.message || t('errors.userCheckFailed')
-      });
-      // Announce error to screen readers
+/**
+  * Handle drag over event for screenshot drop zone
+  * @param {Event} event - Drag over event
+  */
+ handleDragOver(event) {
+   event.preventDefault();
+   event.stopPropagation();
+   const dropzone = this.shadowRoot.getElementById('screenshot-dropzone');
+   if (dropzone) {
+     dropzone.classList.add('drag-over');
+     dropzone.setAttribute('aria-dropeffect', 'copy');
+   }
+ }
+ 
+ /**
+  * Handle drag leave event for screenshot drop zone
+  * @param {Event} event - Drag leave event
+  */
+ handleDragLeave(event) {
+   event.preventDefault();
+   event.stopPropagation();
+   const dropzone = this.shadowRoot.getElementById('screenshot-dropzone');
+   if (dropzone) {
+     dropzone.classList.remove('drag-over');
+     dropzone.setAttribute('aria-dropeffect', 'none');
+   }
+ }
+ 
+ /**
+  * Handle drop event for screenshot drop zone
+  * @param {Event} event - Drop event
+  */
+ handleDrop(event) {
+   event.preventDefault();
+   event.stopPropagation();
+   
+   const dropzone = this.shadowRoot.getElementById('screenshot-dropzone');
+   if (dropzone) {
+     dropzone.classList.remove('drag-over');
+     dropzone.setAttribute('aria-dropeffect', 'none');
+   }
+   
+   const file = event.dataTransfer.files[0];
+   if (!file) return;
+   
+   // Use the same upload handler for dropped files
+   this.handleScreenshotUpload({ target: { files: [file] } });
+ }
+ 
+ /**
+  * Clear uploaded screenshot
+  */
+ clearScreenshot() {
+   this.screenshotData = null;
+   
+   // Announce to screen readers
+   accessibilityHelper.announce(accessibilityMessages.screenshotRemoved, 'polite');
+   
+   this.render();
+ }
+ 
+ /**
+  * Upload screenshot to API with performance monitoring
+  * @returns {Promise<boolean>} Success status
+  */
+ async uploadScreenshot() {
+   performance.mark('screenshot_api_start');
+   performanceMonitor.startTimer('api_screenshot_upload');
+   
+   if (!this.screenshotData) {
+     stateManager.showAlert(t('errors.noScreenshot'));
+     
+     // Announce error to screen readers
+     accessibilityHelper.announce(t('errors.noScreenshot'), 'assertive');
+     
+     return false;
+   }
+   
+   stateManager.setLoading(true);
+   this.verificationStatus = VERIFICATION_STATUSES.PROCESSING;
+   
+   // Announce to screen readers
+   accessibilityHelper.announce(accessibilityMessages.processingScreenshot, 'polite');
+   
+   this.render();
+   
+   try {
+     // Generate a unique user ID if not exists
+     const userId = this.userIdentification.caslKeyId || `user_${Date.now()}`;
+     
+     // Call API to upload screenshot
+     const result = await apiService.uploadScreenshot(this.screenshotData, userId);
+     
+     // Start polling for verification status
+     this.startVerificationStatusPolling(userId);
+     
+     return true;
+   } catch (error) {
+     errorHandler.handleError(error);
+     stateManager.showAlert(errorHandler.getUserFriendlyMessage(error));
+     
+     // Announce error to screen readers
+     accessibilityHelper.announce(`Error uploading screenshot: ${errorHandler.getUserFriendlyMessage(error)}`, 'assertive');
+     
+     stateManager.setLoading(false);
+     return false;
+   } finally {
+     performanceMonitor.endTimer('api_screenshot_upload');
+     performance.mark('screenshot_api_end');
+     performance.measure('screenshot_api', 'screenshot_api_start', 'screenshot_api_end');
+   }
+ }
+ 
+ /**
+  * Start polling for verification status
+  * @param {string} userId - User ID for verification
+  */
+ startVerificationStatusPolling(userId) {
+   // Clear any existing polling interval
+   if (this._verificationPollInterval) {
+     clearInterval(this._verificationPollInterval);
+   }
+   
+   // Poll interval from config
+   const pollInterval = configManager.get('VERIFICATION_POLL_INTERVAL', 3000);
+   
+   // Create interval for polling
+   this._verificationPollInterval = setInterval(async () => {
+     performanceMonitor.startTimer('api_status_check');
+     try {
+       const result = await apiService.checkVerificationStatus(userId);
+       
+       // Update the verification status
+       this.verificationStatus = result.status;
+       
+       // If verification is complete (not processing), stop polling
+       if (result.status !== VERIFICATION_STATUSES.PROCESSING) {
+         clearInterval(this._verificationPollInterval);
+         this._verificationPollInterval = null;
+         stateManager.setLoading(false);
+         
+         // If verified, update user identification
+         if (result.status === VERIFICATION_STATUSES.VERIFIED) {
+           stateManager.setVerification({
+             ...this.userIdentification,
+             isVerified: true,
+             verificationType: 'screenshot',
+             platformData: result.verificationDetails || null
+           });
+           
+           // Update trust preview
+           this.updateTrustPreview();
+           
+           // Announce success to screen readers
+           accessibilityHelper.announce(accessibilityMessages.verificationSuccess, 'polite');
+         } else {
+           // Announce failure or review status
+           if (result.status === VERIFICATION_STATUSES.MANUAL_REVIEW) {
+             accessibilityHelper.announce(t('accessibility.manualReviewRequired'), 'polite');
+           } else {
+             accessibilityHelper.announce(t('accessibility.verificationFailed'), 'assertive');
+           }
+         }
+       }
+     } catch (error) {
+       errorHandler.handleError(error);
+       clearInterval(this._verificationPollInterval);
+       this._verificationPollInterval = null;
+       stateManager.showAlert(errorHandler.getUserFriendlyMessage(error));
+       
+       // Announce error to screen readers
+       accessibilityHelper.announce(`Error checking verification status: ${errorHandler.getUserFriendlyMessage(error)}`, 'assertive');
+       
+       stateManager.setLoading(false);
+     } finally {
+       performanceMonitor.endTimer('api_status_check');
+     }
+   }, pollInterval);
+ }
+ 
+ /**
+  * Update the trust preview with caching
+  */
+ updateTrustPreview() {
+   // Generate cache key from relevant form & user data
+   const cacheKey = `${this.formData.travelingNearHome}_${this.formData.totalGuests}_${this.formData.usedSTRBefore}_${!!this.userIdentification.backgroundCheckStatus}`;
+   
+   // Return cached result if available
+   if (this._trustPreviewCache && this._trustPreviewCache[cacheKey]) {
+     this.trustPreview = this._trustPreviewCache[cacheKey];
+     return;
+   }
+   
+   // Calculate initial score based on current data
+   const result = calculateScore(this.formData, this.userIdentification);
+   const trustLevel = getTrustLevel(result.score);
+   
+   // Generate a host-facing summary
+   const previewData = {
+     caslKeyId: this.userIdentification.caslKeyId || 'Pending',
+     trustLevel,
+     scoreRange: result.score >= 85 ? '85-100' : 
+                result.score >= 70 ? '70-84' : 
+                result.score >= 50 ? '50-69' : 'Below 50',
+     flags: {
+       localBooking: this.formData.travelingNearHome || false,
+       highGuestCount: this.formData.totalGuests > 5 || false,
+       noSTRHistory: !this.formData.usedSTRBefore || false,
+       lastMinuteBooking: false // Calculated elsewhere
+     }
+   };
+   
+   // Cache the result
+   if (!this._trustPreviewCache) this._trustPreviewCache = {};
+   this._trustPreviewCache[cacheKey] = previewData;
+   
+   // Save preview
+   this.saveTrustPreview(previewData);
+   this.trustPreview = previewData;
+ }
+ 
+ /**
+  * Load trust preview from storage
+  */
+ loadTrustPreview() {
+   try {
+     const storageKey = `${configManager.get('STORAGE_PREFIX', 'casl_')}trust_preview`;
+     const previewStr = localStorage.getItem(storageKey);
+     
+     if (previewStr) {
+       this.trustPreview = JSON.parse(previewStr);
+     }
+     
+     return this.trustPreview;
+   } catch (error) {
+     console.error('Error loading trust preview:', error);
+     return null;
+   }
+ }
+ 
+ /**
+  * Save trust preview to storage
+  * @param {Object} previewData - Trust preview data
+  */
+ saveTrustPreview(previewData) {
+   try {
+     const storageKey = `${configManager.get('STORAGE_PREFIX', 'casl_')}trust_preview`;
+     localStorage.setItem(storageKey, JSON.stringify(previewData));
+     this.trustPreview = previewData;
+   } catch (error) {
+     console.error('Error saving trust preview:', error);
+   }
+ }
+ 
+ /**
+  * Validate form based on current step with performance optimization
+  */
+ validateForm() {
+   performanceMonitor.startTimer('validation');
+   let stepErrors = {};
+   
+   // Validate current step
+   switch (this.currentStep) {
+     case 0:
+       stepErrors = validateUserIdentification(
+         this.formData, 
+         this.userIdentification, 
+         this.verificationStatus
+       );
+       break;
+     case 1:
+       stepErrors = validateBookingInfo(this.formData);
+       break;
+     case 2:
+       stepErrors = validateStayIntent(this.formData);
+       break;
+     case 3:
+       stepErrors = validateAgreement(this.formData);
+       break;
+   }
+   
+   // Only update if errors changed
+   if (JSON.stringify(this.errors) !== JSON.stringify(stepErrors)) {
+     this.errors = stepErrors;
+     this.isFormValid = isStepValid(stepErrors);
+   }
+   
+   performanceMonitor.endTimer('validation');
+ }
+ 
+ /**
+  * Handle next step button click with enhanced accessibility
+  */
+ async handleNextStep() {
+   performance.mark('navigation_next_start');
+   performanceMonitor.startTimer('next_step');
+   
+   if (!this.isFormValid) {
+     // Announce errors to screen readers
+     accessibilityHelper.announce(accessibilityMessages.formError(Object.keys(this.errors).length), 'assertive');
+     
+     // Focus the first input with an error
+     this.focusFirstError();
+     
+     performanceMonitor.endTimer('next_step');
+     return;
+   }
+   
+   // Track UX metrics
+   if (!this.uxMetrics.formStarted) {
+     this.uxMetrics.formStarted = true;
+   }
+   
+   // Track step completion (0-based index)
+   if (!this.uxMetrics.stepsCompleted.has(this.currentStep)) {
+     this.uxMetrics.stepsCompleted.add(this.currentStep);
+     
+     // Calculate time spent on this step
+     const timeOnStep = performance.now() - (this.uxMetrics.lastStepTime || this.uxMetrics.startTime);
+     console.info(`Step ${this.currentStep} completion time: ${timeOnStep.toFixed(2)}ms`);
+   }
+   
+   // Update last step time
+   this.uxMetrics.lastStepTime = performance.now();
+   
+   // Special handling for first step (user identification)
+   if (this.currentStep === 0) {
+     // If screenshot verification is shown and there's data, upload it first
+     if (this.showScreenshotUpload && this.screenshotData && 
+         this.verificationStatus !== VERIFICATION_STATUSES.VERIFIED && 
+         this.verificationStatus !== VERIFICATION_STATUSES.MANUAL_REVIEW) {
+       const uploadSuccess = await this.uploadScreenshot();
+       if (!uploadSuccess) {
+         performanceMonitor.endTimer('next_step');
+         return;
+       }
+     }
+     
+     // Check user status
+     const userVerified = await this.handleCheckUser();
+     if (!userVerified) {
+       performanceMonitor.endTimer('next_step');
+       return;
+     }
+     
+     // Handle background check if needed
+     if (this.formData.consentToBackgroundCheck && 
+         !this.userIdentification.backgroundCheckStatus) {
+       await this.initiateBackgroundCheck();
+     }
+     
+     // Update trust preview
+     this.updateTrustPreview();
+   }
+   
+   if (this.currentStep < FORM_STEPS.length - 1) {
+     // Move to next step
+     this.currentStep += 1;
+     
+     // Update form data state
+     stateManager.updateFormData({
+       ...this.formData,
+       currentStep: this.currentStep
+     });
+     
+     // Validate the new step
+     this.validateForm();
+     
+     // Announce step change to screen readers
+     accessibilityHelper.announce(
+       accessibilityMessages.stepChange(this.currentStep + 1, FORM_STEPS.length),
+       'polite'
+     );
+   } else {
+     // Submit form
+     this.handleSubmit();
+   }
+   
+   performanceMonitor.endTimer('next_step');
+   performance.mark('navigation_next_end');
+   performance.measure('navigation_next', 'navigation_next_start', 'navigation_next_end');
+ }
+ 
+ /**
+  * Focus the first input with an error
+  */
+ focusFirstError() {
+   setTimeout(() => {
+     const errorKeys = Object.keys(this.errors);
+     if (errorKeys.length > 0) {
+       const firstErrorKey = errorKeys[0];
+       const errorField = this.shadowRoot.querySelector(`[name="${firstErrorKey}"]`);
+       if (errorField) {
+         errorField.focus();
+       }
+     }
+   }, 100);
+ }
+ 
+ /**
+  * Handle previous step button click with enhanced accessibility
+  */
+ handlePreviousStep() {
+   performance.mark('navigation_prev_start');
+   
+   if (this.currentStep > 0) {
+     this.currentStep -= 1;
+     
+     // Update form data state
+     stateManager.updateFormData({
+       ...this.formData,
+       currentStep: this.currentStep
+     });
+     
+     // Validate the new step
+     this.validateForm();
+     
+     // Announce step change to screen readers
+     accessibilityHelper.announce(
+       accessibilityMessages.stepChange(this.currentStep + 1, FORM_STEPS.length),
+       'polite'
+     );
+   }
+   
+   performance.mark('navigation_prev_end');
+   performance.measure('navigation_prev', 'navigation_prev_start', 'navigation_prev_end');
+ }
+ 
+ /**
+  * Check user verification with API
+  * @returns {Promise<boolean>} Success status
+  */
+ async handleCheckUser() {
+   performance.mark('api_user_check_start');
+   performanceMonitor.startTimer('api_user_check');
+   
+   if (!this.formData.email) {
+     stateManager.showAlert(t('errors.emailRequired'));
+     
+     // Announce error to screen readers
+     accessibilityHelper.announce(t('errors.emailRequired'), 'assertive');
+     
+     return false;
+   }
+   
+   stateManager.setLoading(true);
+   
+   // Announce to screen readers
+   accessibilityHelper.announce(accessibilityMessages.verifying, 'polite');
+   
+   try {
+     const userData = {
+       email: this.formData.email,
+       name: this.formData.name,
+       phone: this.formData.phone,
+       address: this.formData.address
+     };
+     
+     // Update verification state to checking
+     stateManager.setVerification({
+       ...this.userIdentification,
+       isChecking: true,
+       error: null
+     });
+     
+     // Check user status with API
+     const userIdentification = await apiService.checkUserStatus(userData);
+     
+     // Update with verification status from screenshot if we already verified them
+     const isVerified = this.verificationStatus === VERIFICATION_STATUSES.VERIFIED || 
+                        this.verificationStatus === VERIFICATION_STATUSES.MANUAL_REVIEW;
+     
+     if (isVerified && !userIdentification.isVerified) {
+       userIdentification.isVerified = true;
+       userIdentification.verificationType = 'screenshot';
+     }
+     
+     // Update global state
+     stateManager.setVerification({
+       ...userIdentification,
+       isChecking: false
+     });
+     
+     // Announce to screen readers
+     if (userIdentification.isExistingUser) {
+       accessibilityHelper.announce(`Welcome back! We found your existing CASL Key ID: ${userIdentification.caslKeyId}`, 'polite');
+     } else {
+       accessibilityHelper.announce('User verification completed successfully.', 'polite');
+     }
+     
+     return true;
+   } catch (error) {
+     errorHandler.handleError(error);
+     
+     // Update UI state with error
+     stateManager.showAlert(errorHandler.getUserFriendlyMessage(error));
+     
+     // Update verification state with error
+     stateManager.setVerification({
+       ...this.userIdentification,
+       isChecking: false,
+       error: error.message || t('errors.userCheckFailed')
+     });
+     
+     // Announce error to screen readers
      accessibilityHelper.announce(`Error checking user: ${errorHandler.getUserFriendlyMessage(error)}`, 'assertive');
      
      return false;
    } finally {
      stateManager.setLoading(false);
+     performanceMonitor.endTimer('api_user_check');
+     performance.mark('api_user_check_end');
+     performance.measure('api_user_check', 'api_user_check_start', 'api_user_check_end');
    }
  }
  
@@ -952,6 +1436,9 @@ export class CASLVerification extends HTMLElement {
   */
  async initiateBackgroundCheck() {
    if (!this.formData.consentToBackgroundCheck) return;
+   
+   performance.mark('api_bg_check_start');
+   performanceMonitor.startTimer('api_bg_check');
    
    stateManager.setLoading(true);
    
@@ -991,6 +1478,9 @@ export class CASLVerification extends HTMLElement {
      accessibilityHelper.announce(`Background check error: ${errorHandler.getUserFriendlyMessage(error)}`, 'assertive');
    } finally {
      stateManager.setLoading(false);
+     performanceMonitor.endTimer('api_bg_check');
+     performance.mark('api_bg_check_end');
+     performance.measure('api_bg_check', 'api_bg_check_start', 'api_bg_check_end');
    }
  }
  
@@ -999,6 +1489,8 @@ export class CASLVerification extends HTMLElement {
   * @param {Event} event - File input event
   */
  async handleIdImageUpload(event) {
+   performanceMonitor.startTimer('id_image_upload');
+   
    const file = event.target.files[0];
    if (!file) return;
    
@@ -1013,6 +1505,7 @@ export class CASLVerification extends HTMLElement {
      accessibilityHelper.announce("ID image uploaded successfully.", 'polite');
    }
    
+   performanceMonitor.endTimer('id_image_upload');
    this.render();
  }
  
@@ -1021,6 +1514,8 @@ export class CASLVerification extends HTMLElement {
   * @param {Event} event - File input event
   */
  async handleSelfieImageUpload(event) {
+   performanceMonitor.startTimer('selfie_image_upload');
+   
    const file = event.target.files[0];
    if (!file) return;
    
@@ -1035,6 +1530,7 @@ export class CASLVerification extends HTMLElement {
      accessibilityHelper.announce("Selfie image uploaded successfully.", 'polite');
    }
    
+   performanceMonitor.endTimer('selfie_image_upload');
    this.render();
  }
  
@@ -1067,6 +1563,7 @@ export class CASLVerification extends HTMLElement {
   * @param {string} userId - User ID
   */
  async verifyGovId(userId) {
+   performanceMonitor.startTimer('api_verify_gov_id');
    stateManager.setLoading(true);
    
    // Announce to screen readers
@@ -1103,6 +1600,7 @@ export class CASLVerification extends HTMLElement {
      accessibilityHelper.announce(`Government ID verification error: ${errorHandler.getUserFriendlyMessage(error)}`, 'assertive');
    } finally {
      stateManager.setLoading(false);
+     performanceMonitor.endTimer('api_verify_gov_id');
    }
  }
  
@@ -1111,6 +1609,8 @@ export class CASLVerification extends HTMLElement {
   * @param {string} userId - User ID
   */
  async requestPhoneVerification(userId) {
+   performanceMonitor.startTimer('api_request_phone_verification');
+   
    const phoneInput = this.shadowRoot.getElementById('phone-input');
    if (!phoneInput) return;
    
@@ -1149,6 +1649,7 @@ export class CASLVerification extends HTMLElement {
      accessibilityHelper.announce(`Phone verification error: ${errorHandler.getUserFriendlyMessage(error)}`, 'assertive');
    } finally {
      stateManager.setLoading(false);
+     performanceMonitor.endTimer('api_request_phone_verification');
      this.render();
    }
  }
@@ -1158,6 +1659,8 @@ export class CASLVerification extends HTMLElement {
   * @param {string} userId - User ID
   */
  async verifyPhoneCode(userId) {
+   performanceMonitor.startTimer('api_verify_phone_code');
+   
    const codeInput = this.shadowRoot.getElementById('verification-code');
    if (!codeInput) return;
    
@@ -1209,6 +1712,7 @@ export class CASLVerification extends HTMLElement {
      accessibilityHelper.announce(`Phone verification error: ${errorHandler.getUserFriendlyMessage(error)}`, 'assertive');
    } finally {
      stateManager.setLoading(false);
+     performanceMonitor.endTimer('api_verify_phone_code');
      this.render();
    }
  }
@@ -1249,6 +1753,8 @@ export class CASLVerification extends HTMLElement {
   * @param {string} userId - User ID
   */
  async verifySocialProfile(userId) {
+   performanceMonitor.startTimer('api_verify_social_profile');
+   
    const platformSelect = this.shadowRoot.getElementById('social-platform');
    const profileUrlInput = this.shadowRoot.getElementById('profile-url');
    
@@ -1310,21 +1816,28 @@ export class CASLVerification extends HTMLElement {
      errorHandler.handleError(error);
      stateManager.showAlert(errorHandler.getUserFriendlyMessage(error));
      
-     // Announce error to screen readers
+// Announce error to screen readers
      accessibilityHelper.announce(`Social verification error: ${errorHandler.getUserFriendlyMessage(error)}`, 'assertive');
    } finally {
      stateManager.setLoading(false);
+     performanceMonitor.endTimer('api_verify_social_profile');
      this.render();
    }
  }
  
  /**
-  * Handle form submission with enhanced accessibility
+  * Handle form submission with enhanced accessibility and performance monitoring
   */
  async handleSubmit() {
+   performance.mark('form_submit_start');
+   performanceMonitor.startTimer('form_submission');
+   performanceMonitor.checkMemoryUsage(); // Check memory before submission
+   
    if (!this.isFormValid) {
      // Announce errors to screen readers
      accessibilityHelper.announce(accessibilityMessages.formError(Object.keys(this.errors).length), 'assertive');
+     
+     performanceMonitor.endTimer('form_submission');
      return;
    }
 
@@ -1333,11 +1846,20 @@ export class CASLVerification extends HTMLElement {
    // Announce to screen readers
    accessibilityHelper.announce("Submitting verification information. Please wait.", 'polite');
    
+   // Calculate total time for UX metrics
+   const totalTime = (performance.now() - this.uxMetrics.startTime) / 1000;
+   const completionRate = this.uxMetrics.stepsCompleted.size / FORM_STEPS.length;
+   
+   console.info('Form completion time:', totalTime.toFixed(2) + 's', 
+                'Completion rate:', completionRate);
+   
    try {
      // Calculate score and get trust level results
+     performanceMonitor.startTimer('score_calculation');
      const result = calculateScore(this.formData, this.userIdentification);
      const trustLevel = getTrustLevel(result.score);
      const message = getResultMessage(trustLevel);
+     performanceMonitor.endTimer('score_calculation');
      
      // Update results state
      stateManager.setResults({
@@ -1387,13 +1909,17 @@ export class CASLVerification extends HTMLElement {
      };
      
      // Generate host summary
+     performanceMonitor.startTimer('host_summary');
      const hostSummary = generateHostSummary(verificationData);
+     performanceMonitor.endTimer('host_summary');
      
      // Submit verification data to API
+     performanceMonitor.startTimer('api_submit_verification');
      await apiService.submitVerification({
        ...verificationData,
        hostSummary
      });
+     performanceMonitor.endTimer('api_submit_verification');
      
      // Mark as submitted
      stateManager.setResults({
@@ -1439,6 +1965,10 @@ export class CASLVerification extends HTMLElement {
      accessibilityHelper.announce(`Submission error: ${errorHandler.getUserFriendlyMessage(error)}`, 'assertive');
    } finally {
      stateManager.setLoading(false);
+     performanceMonitor.endTimer('form_submission');
+     performance.mark('form_submit_end');
+     performance.measure('form_submission', 'form_submit_start', 'form_submit_end');
+     performanceMonitor.checkMemoryUsage(); // Check memory after submission
    }
  }
  
@@ -1446,15 +1976,18 @@ export class CASLVerification extends HTMLElement {
   * Print verification results
   */
  printResults() {
+   performanceMonitor.startTimer('print_results');
+   
    // Create a printable version of the verification
    const printWindow = window.open('', '_blank');
    
    if (!printWindow) {
-     this.showNotification('Please allow pop-ups to print verification', 'error');
+     stateManager.showAlert('Please allow pop-ups to print verification');
      
      // Announce error to screen readers
      accessibilityHelper.announce("Print failed. Please allow pop-ups in your browser.", 'assertive');
      
+     performanceMonitor.endTimer('print_results');
      return;
    }
    
@@ -1647,12 +2180,17 @@ export class CASLVerification extends HTMLElement {
    
    // Announce to screen readers
    accessibilityHelper.announce("Verification details opened in new window for printing.", 'polite');
+   
+   performanceMonitor.endTimer('print_results');
  }
  
  /**
-  * Reset the form with enhanced accessibility
+  * Reset the form with enhanced accessibility and performance monitoring
   */
  handleReset() {
+   performance.mark('form_reset_start');
+   performanceMonitor.startTimer('form_reset');
+   
    // Reset state
    stateManager.resetSection('formData');
    stateManager.resetSection('verification');
@@ -1680,18 +2218,38 @@ export class CASLVerification extends HTMLElement {
    // Clear saved data
    this.clearSavedData();
    
+   // Reset caches
+   this._trustPreviewCache = {};
+   
+   // Reset UX metrics
+   this.uxMetrics = {
+     formStarted: false,
+     stepsCompleted: new Set(),
+     startTime: performance.now()
+   };
+   
    // Validate form
    this.validateForm();
    
    // Announce reset to screen readers
    accessibilityHelper.announce(accessibilityMessages.resetForm, 'polite');
+   
+   // Force render
+   this._prevRenderState = null;
+   this.render();
+   
+   performanceMonitor.endTimer('form_reset');
+   performance.mark('form_reset_end');
+   performance.measure('form_reset', 'form_reset_start', 'form_reset_end');
  }
  
  /**
-  * Save form data to storage
+  * Save form data to storage with performance optimization
   */
  saveFormData() {
    if (this.submitted) return;
+   
+   performanceMonitor.startTimer('save_form_data');
    
    try {
      // Get storage prefix
@@ -1707,6 +2265,8 @@ export class CASLVerification extends HTMLElement {
      localStorage.setItem(`${prefix}saved_form_data`, JSON.stringify(data));
    } catch (error) {
      console.warn('Error saving form data:', error);
+   } finally {
+     performanceMonitor.endTimer('save_form_data');
    }
  }
  
@@ -1714,6 +2274,8 @@ export class CASLVerification extends HTMLElement {
   * Load saved form data from storage
   */
  loadSavedData() {
+   performanceMonitor.startTimer('load_saved_data');
+   
    try {
      // Get storage prefix
      const prefix = configManager.get('STORAGE_PREFIX', 'casl_');
@@ -1763,6 +2325,8 @@ export class CASLVerification extends HTMLElement {
      }
    } catch (error) {
      console.warn('Error loading saved form data:', error);
+   } finally {
+     performanceMonitor.endTimer('load_saved_data');
    }
  }
  
@@ -1894,7 +2458,7 @@ export class CASLVerification extends HTMLElement {
      this.handleDragLeave.bind(this)
    );
    
-eventManager.registerHandler(
+   eventManager.registerHandler(
      this.componentId,
      'handleDrop',
      this.handleDrop.bind(this)
@@ -1904,7 +2468,7 @@ eventManager.registerHandler(
    eventManager.registerHandler(
      this.componentId,
      'toggleVerificationMethods',
-     (_, target) => this.toggleVerificationMethods(false)
+     (_, target) => this.toggleVerificationMethods(target?.getAttribute('data-show') === 'true')
    );
    
    eventManager.registerHandler(
