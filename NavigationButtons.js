@@ -2,7 +2,7 @@
 import { FORM_STEPS } from '../../utils/constants.js';
 
 /**
- * Renders navigation buttons for form steps
+ * Renders accessible navigation buttons for form steps
  * @param {number} currentStep - Current step index
  * @param {boolean} isFormValid - Whether current form step is valid
  * @param {boolean} isLoading - Whether a request is in progress
@@ -10,52 +10,72 @@ import { FORM_STEPS } from '../../utils/constants.js';
  */
 export function renderNavigationButtons(currentStep, isFormValid, isLoading) {
   const isLastStep = currentStep === FORM_STEPS.length - 1;
+  const isFirstStep = currentStep === 0;
+  
+  // Previous button attributes
+  const prevButtonDisabled = isFirstStep ? 'disabled' : '';
+  const prevButtonStyle = isFirstStep ? 'background-color: var(--neutral-light);' : '';
+  const prevButtonAriaLabel = `Go to previous step: ${currentStep > 0 ? FORM_STEPS[currentStep - 1] : ''}`;
+  
+  // Next button attributes
+  const nextButtonDisabled = !isFormValid || isLoading ? 'disabled' : '';
+  const nextButtonStyle = (!isFormValid || isLoading) ? 'opacity: 0.7;' : '';
+  const nextButtonAction = isLastStep ? 'Submit form' : `Go to next step: ${FORM_STEPS[currentStep + 1]}`;
+  const nextButtonClass = `navigation-button next-button ${isLastStep ? 'submit-button' : ''}`;
   
   return `
-    <div class="navigation-buttons">
+    <div class="navigation-buttons" role="navigation" aria-label="Form navigation">
       <button 
-        onclick="this.getRootNode().host.handlePreviousStep()"
-        ${currentStep === 0 ? 'disabled' : ''}
-        style="background-color: ${currentStep === 0 ? '#ccc' : 'var(--neutral-color)'}"
-        aria-label="Go to previous step"
+        data-event-click="handlePreviousStep"
+        ${prevButtonDisabled}
+        style="${prevButtonStyle}"
+        aria-label="${prevButtonAriaLabel}"
+        class="navigation-button prev-button"
       >
-        Previous
+        <span aria-hidden="true">←</span> Previous
       </button>
       
       <button 
-        onclick="this.getRootNode().host.handleNextStep()"
-        ${!isFormValid || isLoading ? 'disabled' : ''}
-        style="opacity: ${(!isFormValid || isLoading) ? 0.7 : 1}"
-        aria-label="${isLastStep ? 'Submit form' : 'Go to next step'}"
+        data-event-click="handleNextStep"
+        ${nextButtonDisabled}
+        style="${nextButtonStyle}"
+        aria-label="${nextButtonAction}"
+        class="${nextButtonClass}"
       >
         ${isLoading ? `
-          <span>
-            <span style="display: inline-block; margin-right: 8px" aria-hidden="true">
-              <!-- Loading indicator SVG -->
-              <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="4" opacity="0.25" />
-                <circle 
-                  cx="12" 
-                  cy="12" 
-                  r="10" 
-                  fill="none" 
-                  stroke="currentColor" 
-                  stroke-width="4" 
-                  stroke-dasharray="30 100" 
-                  style="animation: spin 1s linear infinite" 
-                />
-              </svg>
-              <style>
-                @keyframes spin {
-                  from { transform: rotate(0deg); }
-                  to { transform: rotate(360deg); }
-                }
-              </style>
-            </span>
-            <span aria-live="polite">${isLastStep ? 'Submitting...' : 'Loading...'}</span>
+          <span class="loading-indicator" aria-hidden="true">
+            <!-- Loading indicator SVG -->
+            <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" role="presentation">
+              <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="4" opacity="0.25" />
+              <circle 
+                cx="12" 
+                cy="12" 
+                r="10" 
+                fill="none" 
+                stroke="currentColor" 
+                stroke-width="4" 
+                stroke-dasharray="30 100" 
+                style="animation: spin 1s linear infinite" 
+              />
+            </svg>
+            <span class="sr-only">${isLastStep ? 'Submitting form' : 'Loading next step'}</span>
           </span>
-        ` : isLastStep ? 'Submit' : 'Next'}
+          <span>${isLastStep ? 'Submitting...' : 'Loading...'}</span>
+        ` : isLastStep ? 'Submit' : 'Next <span aria-hidden="true">→</span>'}
       </button>
     </div>
+    
+    <style>
+      @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+      
+      @media (prefers-reduced-motion: reduce) {
+        .loading-indicator svg {
+          animation: none !important;
+        }
+      }
+    </style>
   `;
 }
