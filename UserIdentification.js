@@ -1,9 +1,11 @@
 // src/components/FormSteps/UserIdentification.js
 import { VERIFICATION_STATUSES } from '../../utils/constants.js';
 import { renderTooltip, renderBackgroundCheckNotification } from '../common/Alerts.js';
+import { renderAccessibleFormField } from '../common/AccessibleFormField.js';
+import { accessibilityHelper } from '../../utils/AccessibilityHelper.js';
 
 /**
- * Renders the User Identification form step
+ * Renders the User Identification form step with enhanced accessibility
  * @param {Object} formData - Form data values
  * @param {Object} errors - Validation errors
  * @param {Object} userIdentification - User identification data
@@ -20,34 +22,44 @@ export function renderUserIdentification(
   screenshotData, 
   verificationStatus
 ) {
+  // Provide a loading state during user verification check
   if (userIdentification.isChecking) {
     return `
       <div class="form-section" style="text-align: center">
-        <h2>User Identification</h2>
+        <h2 id="user-id-heading">User Identification</h2>
+        <div class="loading-indicator" aria-hidden="true"></div>
         <p>Checking user status...</p>
         <div role="status" aria-live="polite">Verifying your information. Please wait.</div>
       </div>
     `;
   }
   
+  // Platform verification section for screenshot upload
   let platformVerificationHtml = '';
   
   // Add the screenshot upload section if shown
   if (showScreenshotUpload) {
     platformVerificationHtml = `
       <div style="margin-top: 20px; margin-bottom: 20px;">
-        <h3>Platform Verification via Screenshot</h3>
+        <h3 id="screenshot-heading">Platform Verification via Screenshot</h3>
         <p>Please upload a screenshot of your Airbnb or VRBO profile page to verify your account.</p>
         
         <div class="screenshot-container" 
              id="screenshot-dropzone"
-             ondragover="this.getRootNode().host.handleDragOver(event)"
-             ondragleave="this.getRootNode().host.handleDragLeave(event)"
-             ondrop="this.getRootNode().host.handleDrop(event)">
+             data-event-dragover="handleDragOver"
+             data-event-dragleave="handleDragLeave"
+             data-event-drop="handleDrop"
+             aria-labelledby="screenshot-heading">
           ${screenshotData ? `
             <p>Screenshot Preview:</p>
             <img src="${screenshotData}" class="screenshot-preview" alt="Uploaded profile screenshot" />
-            <button onclick="this.getRootNode().host.clearScreenshot()" class="neutral">Remove Screenshot</button>
+            <button 
+              data-event-click="clearScreenshot" 
+              class="neutral"
+              aria-label="Remove uploaded screenshot"
+            >
+              Remove Screenshot
+            </button>
           ` : `
             <p>Drag a screenshot here or click to select a file</p>
             <input 
@@ -56,26 +68,26 @@ export function renderUserIdentification(
               id="screenshot-input" 
               class="file-input"
               aria-label="Upload profile screenshot"
-              onchange="this.getRootNode().host.handleScreenshotUpload(event)" 
+              data-event-change="handleScreenshotUpload" 
             />
           `}
         </div>
         
         ${verificationStatus === VERIFICATION_STATUSES.PROCESSING ? `
-          <div class="alert alert-info">
+          <div class="alert alert-info" role="status">
+            <div class="loading-indicator" aria-hidden="true"></div>
             <p>Your screenshot is being processed. This may take a minute...</p>
-            <div role="status" aria-live="polite">Processing screenshot. This may take a minute.</div>
           </div>
         ` : verificationStatus === VERIFICATION_STATUSES.VERIFIED ? `
-          <div class="alert alert-success">
+          <div class="alert alert-success" role="status">
             <p>✅ Your account has been verified successfully!</p>
           </div>
         ` : verificationStatus === VERIFICATION_STATUSES.MANUAL_REVIEW ? `
-          <div class="alert alert-warning">
+          <div class="alert alert-warning" role="status">
             <p>👀 Your screenshot has been submitted for manual review. We'll notify you once it's verified.</p>
           </div>
         ` : verificationStatus === VERIFICATION_STATUSES.REJECTED ? `
-          <div class="alert alert-error">
+          <div class="alert alert-error" role="alert">
             <p>❌ We couldn't verify your account from this screenshot. Please try again with a clearer image.</p>
           </div>
         ` : ''}
@@ -85,11 +97,11 @@ export function renderUserIdentification(
   
   // Check if we need to show the background check consent
   const needsBackgroundCheck = !formData.airbnbProfile && 
-                            !formData.vrboProfile && 
-                            !formData.otherPlatformProfile &&
-                            !userIdentification.isVerified &&
-                            verificationStatus !== VERIFICATION_STATUSES.VERIFIED &&
-                            verificationStatus !== VERIFICATION_STATUSES.MANUAL_REVIEW;
+                              !formData.vrboProfile && 
+                              !formData.otherPlatformProfile &&
+                              !userIdentification.isVerified &&
+                              verificationStatus !== VERIFICATION_STATUSES.VERIFIED &&
+                              verificationStatus !== VERIFICATION_STATUSES.MANUAL_REVIEW;
   
   return `
     <div class="form-section" role="form" aria-labelledby="user-id-heading">
@@ -103,152 +115,145 @@ export function renderUserIdentification(
       
       ${userIdentification.caslKeyId && userIdentification.isExistingUser ? `
         <div class="alert alert-success" role="status">
-          Welcome back! We found your existing CASL Key ID: ${userIdentification.caslKeyId}
+          <p>Welcome back! We found your existing CASL Key ID: <strong>${userIdentification.caslKeyId}</strong></p>
         </div>
       ` : ''}
       
-      <div style="margin-bottom: 15px;">
-        <label for="name-input">Full Name*</label>
-        <input 
-          type="text" 
-          id="name-input"
-          name="name" 
-          value="${formData.name}" 
-          onchange="this.getRootNode().host.handleInputChange(event)"
-          aria-required="true"
-          aria-invalid="${errors.name ? 'true' : 'false'}"
-          aria-describedby="${errors.name ? 'name-error' : ''}"
-        />
-        ${errors.name ? `<p id="name-error" class="error" role="alert">${errors.name}</p>` : ''}
+      <div class="sr-only" id="form-instructions">
+        This section collects your personal information for verification. Required fields are marked with an asterisk.
       </div>
       
-      <div style="margin-bottom: 15px;">
-        <label for="email-input">Email Address*</label>
-        <input 
-          type="email" 
-          id="email-input"
-          name="email" 
-          value="${formData.email}" 
-          onchange="this.getRootNode().host.handleInputChange(event)"
-          aria-required="true"
-          aria-invalid="${errors.email ? 'true' : 'false'}"
-          aria-describedby="${errors.email ? 'email-error' : ''}"
-        />
-        ${errors.email ? `<p id="email-error" class="error" role="alert">${errors.email}</p>` : ''}
-      </div>
+      <fieldset aria-describedby="form-instructions">
+        <legend class="sr-only">Personal Information</legend>
+        
+        <!-- Using our accessible form fields -->
+        ${renderAccessibleFormField({
+          id: 'name-input',
+          name: 'name',
+          label: 'Full Name',
+          value: formData.name || '',
+          required: true,
+          error: errors.name || '',
+          autocomplete: 'name'
+        })}
+        
+        ${renderAccessibleFormField({
+          id: 'email-input',
+          name: 'email',
+          label: 'Email Address',
+          type: 'email',
+          value: formData.email || '',
+          required: true,
+          error: errors.email || '',
+          autocomplete: 'email'
+        })}
+        
+        ${renderAccessibleFormField({
+          id: 'phone-input',
+          name: 'phone',
+          label: 'Phone Number',
+          type: 'tel',
+          value: formData.phone || '',
+          required: true,
+          error: errors.phone || '',
+          autocomplete: 'tel'
+        })}
+        
+        ${renderAccessibleFormField({
+          id: 'address-input',
+          name: 'address',
+          label: 'Address',
+          value: formData.address || '',
+          required: true,
+          error: errors.address || '',
+          autocomplete: 'street-address'
+        })}
+      </fieldset>
       
-      <div style="margin-bottom: 15px;">
-        <label for="phone-input">Phone Number*</label>
-        <input 
-          type="tel" 
-          id="phone-input"
-          name="phone" 
-          value="${formData.phone}" 
-          onchange="this.getRootNode().host.handleInputChange(event)"
-          aria-required="true"
-          aria-invalid="${errors.phone ? 'true' : 'false'}"
-          aria-describedby="${errors.phone ? 'phone-error' : ''}"
-        />
-        ${errors.phone ? `<p id="phone-error" class="error" role="alert">${errors.phone}</p>` : ''}
-      </div>
-      
-      <div style="margin-bottom: 15px;">
-        <label for="address-input">Address*</label>
-        <input 
-          type="text" 
-          id="address-input"
-          name="address" 
-          value="${formData.address}" 
-          onchange="this.getRootNode().host.handleInputChange(event)"
-          aria-required="true"
-          aria-invalid="${errors.address ? 'true' : 'false'}"
-          aria-describedby="${errors.address ? 'address-error' : ''}"
-        />
-        ${errors.address ? `<p id="address-error" class="error" role="alert">${errors.address}</p>` : ''}
-      </div>
-      
-      <h3>Platform Verification
-        ${renderTooltip("Providing a platform profile helps verify your identity and may improve your trust score.")}
-      </h3>
-      
-      <div style="margin-bottom: 15px;">
-        <label for="airbnb-input">Airbnb Profile Link (Optional)</label>
-        <input 
-          type="url" 
-          id="airbnb-input"
-          name="airbnbProfile" 
-          value="${formData.airbnbProfile}" 
-          placeholder="https://www.airbnb.com/users/show/123456789"
-          onchange="this.getRootNode().host.handleInputChange(event)"
-        />
-        <p style="font-size: 12px; color: #666;">Providing a profile helps with verification</p>
-      </div>
-
-      <div style="margin-bottom: 15px;">
-        <label for="vrbo-input">Vrbo Profile Link (Optional)</label>
-        <input 
-          type="url" 
-          id="vrbo-input"
-          name="vrboProfile" 
-          value="${formData.vrboProfile}" 
-          placeholder="https://www.vrbo.com/user/12345abcde"
-          onchange="this.getRootNode().host.handleInputChange(event)"
-        />
-      </div>
-
-      <div style="margin-bottom: 15px;">
-        <label for="other-platform-select">Other Platform Profile (Optional)</label>
-        <div style="display: flex; gap: 10px;">
-          <select
-            id="other-platform-select"
-            name="otherPlatformType"
-            value="${formData.otherPlatformType}"
-            onchange="this.getRootNode().host.handleInputChange(event)"
-            style="flex: 1"
-          >
-            <option value="">Select platform</option>
-            <option value="booking" ${formData.otherPlatformType === 'booking' ? 'selected' : ''}>Booking.com</option>
-            <option value="tripadvisor" ${formData.otherPlatformType === 'tripadvisor' ? 'selected' : ''}>TripAdvisor</option>
-            <option value="homeaway" ${formData.otherPlatformType === 'homeaway' ? 'selected' : ''}>HomeAway</option>
-            <option value="other" ${formData.otherPlatformType === 'other' ? 'selected' : ''}>Other</option>
-          </select>
-          
-          <input
-            type="url"
-            id="other-platform-input"
-            name="otherPlatformProfile"
-            value="${formData.otherPlatformProfile}"
-            placeholder="https://example.com/profile/123"
-            onchange="this.getRootNode().host.handleInputChange(event)"
-            style="flex: 2"
-          />
+      <fieldset>
+        <legend>
+          <h3>Platform Verification
+            ${renderTooltip("Providing a platform profile helps verify your identity and may improve your trust score.")}
+          </h3>
+        </legend>
+        
+        ${renderAccessibleFormField({
+          id: 'airbnb-input',
+          name: 'airbnbProfile',
+          label: 'Airbnb Profile Link',
+          type: 'url',
+          value: formData.airbnbProfile || '',
+          placeholder: 'https://www.airbnb.com/users/show/123456789',
+          autocomplete: 'url',
+          description: 'Link to your profile page on Airbnb (optional)'
+        })}
+        
+        ${renderAccessibleFormField({
+          id: 'vrbo-input',
+          name: 'vrboProfile',
+          label: 'Vrbo Profile Link',
+          type: 'url',
+          value: formData.vrboProfile || '',
+          placeholder: 'https://www.vrbo.com/user/12345abcde',
+          autocomplete: 'url',
+          description: 'Link to your profile page on Vrbo (optional)'
+        })}
+        
+        <div class="form-field">
+          <label for="other-platform-select">Other Platform Profile (Optional)</label>
+          <div style="display: flex; gap: 10px;">
+            <select
+              id="other-platform-select"
+              name="otherPlatformType"
+              value="${formData.otherPlatformType || ''}"
+              data-event-change="handleInputChange"
+              style="flex: 1"
+              aria-label="Select platform type"
+            >
+              <option value="">Select platform</option>
+              <option value="booking" ${formData.otherPlatformType === 'booking' ? 'selected' : ''}>Booking.com</option>
+              <option value="tripadvisor" ${formData.otherPlatformType === 'tripadvisor' ? 'selected' : ''}>TripAdvisor</option>
+              <option value="homeaway" ${formData.otherPlatformType === 'homeaway' ? 'selected' : ''}>HomeAway</option>
+              <option value="other" ${formData.otherPlatformType === 'other' ? 'selected' : ''}>Other</option>
+            </select>
+            
+            <input
+              type="url"
+              id="other-platform-input"
+              name="otherPlatformProfile"
+              value="${formData.otherPlatformProfile || ''}"
+              placeholder="https://example.com/profile/123"
+              data-event-change="handleInputChange"
+              style="flex: 2"
+              aria-label="Platform profile URL"
+              autocomplete="url"
+            />
+          </div>
+          <div class="field-description">Profile link from another travel or booking platform (optional)</div>
         </div>
-      </div>
+      </fieldset>
       
       ${!formData.airbnbProfile && !formData.vrboProfile && !formData.otherPlatformProfile ? `
-        <button 
-          onclick="this.getRootNode().host.toggleScreenshotUpload(true)" 
-          class="success"
-          style="margin-bottom: 15px"
-        >
-          Verify with Account Screenshot
-        </button>
-        
-        ${renderBackgroundCheckNotification(needsBackgroundCheck)}
-        
-        <div class="checkbox-container">
-          <input 
-            type="checkbox" 
-            id="bg-check-consent"
-            name="consentToBackgroundCheck" 
-            ${formData.consentToBackgroundCheck ? 'checked' : ''} 
-            onchange="this.getRootNode().host.handleInputChange(event)"
-          />
-          <label for="bg-check-consent" class="checkbox-label">
-            I consent to a background check to verify my identity. 
-            This is necessary if you don't provide any platform profile links.
-            ${renderTooltip("Background checks only verify your identity. Only a pass/fail result is stored, never your personal details.")}
-          </label>
+        <div class="alternative-verification-methods">
+          <button 
+            data-event-click="toggleScreenshotUpload" 
+            class="success"
+            style="margin-bottom: 15px"
+            aria-label="Verify with account screenshot"
+          >
+            Verify with Account Screenshot
+          </button>
+          
+          ${renderBackgroundCheckNotification(needsBackgroundCheck)}
+          
+          ${renderAccessibleFormField({
+            id: 'bg-check-consent',
+            name: 'consentToBackgroundCheck',
+            label: `I consent to a background check to verify my identity.`,
+            type: 'checkbox',
+            value: formData.consentToBackgroundCheck || false,
+            description: 'Background checks only verify your identity. Only a pass/fail result is stored, never your personal details. This is necessary if you don\'t provide any platform profile links.'
+          })}
         </div>
       ` : ''}
       
