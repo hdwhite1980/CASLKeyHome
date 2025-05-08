@@ -19,7 +19,7 @@ export function renderAccessibleFormField({
   onChange = "this.getRootNode().host.handleInputChange(event)",
   min,
   max,
-  options
+  options = []
 }) {
   const fieldId = id || `field-${name}`;
   const errorId = error ? `${fieldId}-error` : '';
@@ -33,13 +33,13 @@ export function renderAccessibleFormField({
     aria-required="${required}"
     aria-invalid="${hasError ? 'true' : 'false'}"
     ${errorId ? `aria-describedby="${errorId}"` : ''}
-    onchange="${onChange}"
+    data-event-change="${onChange.replace('this.getRootNode().host.', '')}"
   `;
   
   // Field-specific rendering based on type
   let fieldHtml = '';
   
-  if (type === 'select' && options) {
+  if (type === 'select' && options.length > 0) {
     // Select dropdown
     fieldHtml = `
       <select ${commonAttributes}>
