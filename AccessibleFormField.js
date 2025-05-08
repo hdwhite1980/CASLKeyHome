@@ -1,4 +1,5 @@
 // src/components/common/AccessibleFormField.js
+import { renderTooltip } from './Alerts.js';
 
 /**
  * Renders an accessible form field with proper labeling and error handling
@@ -16,24 +17,36 @@ export function renderAccessibleFormField({
   autocomplete = '',
   placeholder = '',
   tooltip = '',
-  onChange = "this.getRootNode().host.handleInputChange(event)",
+  onChange = "handleInputChange",
   min,
   max,
-  options = []
+  options = [],
+  description = ''
 }) {
   const fieldId = id || `field-${name}`;
   const errorId = error ? `${fieldId}-error` : '';
+  const descriptionId = description ? `${fieldId}-description` : '';
   const hasError = !!error;
+  
+  // Build describedby value from errorId and descriptionId
+  let describedby = '';
+  if (errorId && descriptionId) {
+    describedby = `${errorId} ${descriptionId}`;
+  } else if (errorId) {
+    describedby = errorId;
+  } else if (descriptionId) {
+    describedby = descriptionId;
+  }
   
   // Common attributes for all field types
   const commonAttributes = `
     id="${fieldId}"
     name="${name}" 
     ${required ? 'required' : ''}
-    aria-required="${required}"
+    aria-required="${required ? 'true' : 'false'}"
     aria-invalid="${hasError ? 'true' : 'false'}"
-    ${errorId ? `aria-describedby="${errorId}"` : ''}
-    data-event-change="${onChange.replace('this.getRootNode().host.', '')}"
+    ${describedby ? `aria-describedby="${describedby.trim()}"` : ''}
+    data-event-change="${onChange}"
   `;
   
   // Field-specific rendering based on type
@@ -71,6 +84,35 @@ export function renderAccessibleFormField({
         <label for="${fieldId}" class="checkbox-label">
           ${label}${required ? '*' : ''}${tooltip}
         </label>
+        ${description ? `<div id="${descriptionId}" class="field-description">${description}</div>` : ''}
+        ${error ? `<p id="${errorId}" class="error" role="alert">${error}</p>` : ''}
+      </div>
+    `;
+  } else if (type === 'radio' && options.length > 0) {
+    // Radio button group
+    const radioGroupHtml = options.map((option, index) => {
+      const radioId = `${fieldId}-${index}`;
+      return `
+        <div class="radio-option">
+          <input 
+            type="radio" 
+            id="${radioId}" 
+            name="${name}" 
+            value="${option.value}" 
+            ${value === option.value ? 'checked' : ''}
+            ${required ? 'required' : ''}
+            data-event-change="${onChange}"
+          />
+          <label for="${radioId}">${option.label}</label>
+        </div>
+      `;
+    }).join('');
+    
+    return `
+      <div class="form-field radio-group">
+        <div class="field-label">${label}${required ? '*' : ''}${tooltip}</div>
+        ${radioGroupHtml}
+        ${description ? `<div id="${descriptionId}" class="field-description">${description}</div>` : ''}
         ${error ? `<p id="${errorId}" class="error" role="alert">${error}</p>` : ''}
       </div>
     `;
@@ -89,11 +131,12 @@ export function renderAccessibleFormField({
     `;
   }
   
-  // Standard form field container (except for checkboxes)
+  // Standard form field container (except for checkboxes and radio groups)
   return `
-    <div class="form-field">
+    <div class="form-field ${hasError ? 'has-error' : ''}">
       <label for="${fieldId}">${label}${required ? '*' : ''}${tooltip}</label>
       ${fieldHtml}
+      ${description ? `<div id="${descriptionId}" class="field-description">${description}</div>` : ''}
       ${error ? `<p id="${errorId}" class="error" role="alert">${error}</p>` : ''}
     </div>
   `;
