@@ -2,53 +2,55 @@
 import { FORM_STEPS } from './constants.js';
 
 /**
- * Accessibility messages for screen readers and announcements
+ * Provides standardized accessibility messages for screen reader announcements
  */
 export const accessibilityMessages = {
   // Form navigation
-  stepChange: (step, totalSteps) => 
-    `Moving to step ${step} of ${totalSteps}: ${FORM_STEPS[step - 1]}`,
+  stepChange: (step, totalSteps) => `Moving to step ${step} of ${totalSteps}: ${FORM_STEPS[step - 1]}`,
   
-  navigationInstructions: 
-    `This form has multiple steps. Use the Next and Previous buttons to navigate. Required fields are marked with an asterisk.`,
+  formInstructions: "This form has multiple steps. Required fields are marked with an asterisk. Use the Next and Previous buttons to navigate between steps.",
   
   // Form validation
-  formErrors: (count) => {
+  formError: (count) => {
     if (count === 1) return "1 form field has an error. Please correct it before proceeding.";
     return `${count} form fields have errors. Please correct them before proceeding.`;
   },
   
-  // Status updates
-  loading: (step) => {
-    if (!step) return "Loading content, please wait.";
-    return `Loading step ${step + 1}: ${FORM_STEPS[step]}. Please wait.`;
-  },
+  fieldError: (fieldName) => `${fieldName} field has an error that needs to be corrected.`,
   
-  verificationProcessing: 
-    "Your verification is being processed. This may take a minute. Please wait.",
+  // Loading states
+  loading: (operation) => `Loading ${operation || 'content'}. Please wait.`,
+  processingScreenshot: "Processing your screenshot. This may take a minute.",
+  verifying: "Verifying your information. Please wait.",
   
-  // Results
-  verificationComplete: (caslKeyId, score, trustLevel) =>
-    `Verification complete! Your CASL Key ID is ${caslKeyId}. Your trust score is ${score} out of 100, rated as ${trustLevel}.`,
+  // Success messages
+  submissionComplete: (caslKeyId, score, level) => 
+    `Verification complete! Your CASL Key ID is ${caslKeyId} with a trust score of ${score} out of 100. Trust level: ${level}.`,
   
-  verificationFailed:
-    "Verification could not be completed. Please check the provided information.",
+  verificationSuccess: "Your account has been successfully verified!",
   
-  // Verification methods
+  backgroundCheckComplete: "Background check completed successfully.",
+  
+  // Method-specific messages
   verificationMethod: {
     success: (method) => `${method} verification successful! This will improve your trust score.`,
-    failed: (method) => `${method} verification failed. You can try again or use a different method.`,
+    failed: (method) => `${method} verification could not be completed. You can try again or use a different verification method.`,
     inProgress: (method) => `${method} verification in progress. Please wait.`
   },
   
-  // Field-specific messages
-  requiredField: (field) => `${field} is required.`,
-  invalidField: (field) => `${field} is invalid.`,
+  // Screenshot upload
+  screenshotUploaded: "Screenshot uploaded successfully. Processing for verification.",
+  screenshotRemoved: "Screenshot has been removed.",
   
-  // Screen reader only instructions
-  focusInstructions:
-    "Use Tab key to navigate between form fields. Required fields are marked with an asterisk.",
+  // Dialog announcements
+  dialogOpened: (title) => `Dialog opened: ${title}`,
+  dialogClosed: "Dialog closed",
   
-  errorContext:
-    "There are errors in the form. Each field with an error has been marked."
+  // Error recovery
+  tryPrevious: "Try going back to the previous step to fix the issue.",
+  tryAgain: "Please try again.",
+  
+  // Reset and navigation
+  resetForm: "Form has been reset. Starting over.",
+  returnToDashboard: "Returning to dashboard."
 };
