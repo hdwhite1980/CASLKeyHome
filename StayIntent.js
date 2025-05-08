@@ -1,163 +1,141 @@
 // src/components/FormSteps/StayIntent.js
 import { renderTooltip } from '../common/Alerts.js';
+import { renderAccessibleFormField } from '../common/AccessibleFormField.js';
 
 /**
- * Renders the Stay Intent form step
+ * Renders the Stay Intent form step with enhanced accessibility
  * @param {Object} formData - Form data values
  * @param {Object} errors - Validation errors
  * @returns {string} HTML string for stay intent step
  */
 export function renderStayIntent(formData, errors) {
+  // Purpose options for dropdown
+  const purposeOptions = [
+    { value: '', label: 'Select purpose' },
+    { value: 'Business', label: 'Business' },
+    { value: 'Family Visit', label: 'Family Visit' },
+    { value: 'Vacation', label: 'Vacation' },
+    { value: 'Special Occasion', label: 'Special Occasion' },
+    { value: 'Relocation', label: 'Relocation' },
+    { value: 'Medical Stay', label: 'Medical Stay' },
+    { value: 'Other', label: 'Other' }
+  ];
+
   return `
     <div class="form-section" role="form" aria-labelledby="stay-intent-heading">
       <h2 id="stay-intent-heading">Stay Intent & Group Profile</h2>
       
-      <div style="margin-bottom: 15px;">
-        <label for="purpose-select">What is the primary purpose of your stay?*
-          ${renderTooltip("This helps hosts understand why you're traveling.")}
-        </label>
-        <select 
-          id="purpose-select"
-          name="stayPurpose" 
-          value="${formData.stayPurpose}" 
-          onchange="this.getRootNode().host.handleInputChange(event)"
-          aria-required="true"
-          aria-invalid="${errors.stayPurpose ? 'true' : 'false'}"
-          aria-describedby="${errors.stayPurpose ? 'purpose-error' : ''}"
-        >
-          <option value="">Select purpose</option>
-          <option value="Business" ${formData.stayPurpose === 'Business' ? 'selected' : ''}>Business</option>
-          <option value="Family Visit" ${formData.stayPurpose === 'Family Visit' ? 'selected' : ''}>Family Visit</option>
-          <option value="Vacation" ${formData.stayPurpose === 'Vacation' ? 'selected' : ''}>Vacation</option>
-          <option value="Special Occasion" ${formData.stayPurpose === 'Special Occasion' ? 'selected' : ''}>Special Occasion</option>
-          <option value="Relocation" ${formData.stayPurpose === 'Relocation' ? 'selected' : ''}>Relocation</option>
-          <option value="Medical Stay" ${formData.stayPurpose === 'Medical Stay' ? 'selected' : ''}>Medical Stay</option>
-          <option value="Other" ${formData.stayPurpose === 'Other' ? 'selected' : ''}>Other</option>
-        </select>
-        ${errors.stayPurpose ? `<p id="purpose-error" class="error" role="alert">${errors.stayPurpose}</p>` : ''}
+      <div class="sr-only" id="stay-intent-instructions">
+        This section collects information about your stay purpose and guest details. Required fields are marked with an asterisk.
       </div>
       
-      ${formData.stayPurpose === 'Other' ? `
-        <div style="margin-bottom: 15px;">
-          <label for="other-purpose-input">Please specify*</label>
-          <input 
-            type="text" 
-            id="other-purpose-input"
-            name="otherPurpose" 
-            value="${formData.otherPurpose}" 
-            onchange="this.getRootNode().host.handleInputChange(event)"
-            aria-required="true"
-            aria-invalid="${errors.otherPurpose ? 'true' : 'false'}"
-            aria-describedby="${errors.otherPurpose ? 'other-purpose-error' : ''}"
-          />
-          ${errors.otherPurpose ? `<p id="other-purpose-error" class="error" role="alert">${errors.otherPurpose}</p>` : ''}
-        </div>
-      ` : ''}
+      <fieldset aria-describedby="stay-intent-instructions">
+        <legend class="sr-only">Stay Purpose Information</legend>
+        
+        ${renderAccessibleFormField({
+          id: 'purpose-select',
+          name: 'stayPurpose',
+          label: `What is the primary purpose of your stay?`,
+          tooltip: renderTooltip("This helps hosts understand why you're traveling."),
+          type: 'select',
+          value: formData.stayPurpose || '',
+          required: true,
+          error: errors.stayPurpose || '',
+          options: purposeOptions
+        })}
+        
+        ${formData.stayPurpose === 'Other' ? 
+          renderAccessibleFormField({
+            id: 'other-purpose-input',
+            name: 'otherPurpose',
+            label: 'Please specify',
+            value: formData.otherPurpose || '',
+            required: true,
+            error: errors.otherPurpose || ''
+          }) : ''}
+      </fieldset>
       
-      <div style="margin-bottom: 15px;">
-        <label for="guests-input">How many total guests will stay?*</label>
-        <input 
-          type="number" 
-          id="guests-input"
-          name="totalGuests" 
-          value="${formData.totalGuests}" 
-          min="1" 
-          max="20" 
-          onchange="this.getRootNode().host.handleInputChange(event)"
-          aria-required="true"
-          aria-invalid="${errors.totalGuests ? 'true' : 'false'}"
-          aria-describedby="${errors.totalGuests ? 'guests-error' : ''}"
-        />
-        ${errors.totalGuests ? `<p id="guests-error" class="error" role="alert">${errors.totalGuests}</p>` : ''}
-      </div>
+      <fieldset>
+        <legend class="sr-only">Guest Information</legend>
+        
+        ${renderAccessibleFormField({
+          id: 'guests-input',
+          name: 'totalGuests',
+          label: 'How many total guests will stay?',
+          type: 'number',
+          value: formData.totalGuests || '',
+          required: true,
+          error: errors.totalGuests || '',
+          min: 1,
+          max: 20
+        })}
+        
+        ${renderAccessibleFormField({
+          id: 'children-checkbox',
+          name: 'childrenUnder12',
+          label: `Are there any children under 12?`,
+          tooltip: renderTooltip("Having children in your group may positively affect your trust score."),
+          type: 'checkbox',
+          value: formData.childrenUnder12 || false
+        })}
+        
+        ${renderAccessibleFormField({
+          id: 'non-overnight-checkbox',
+          name: 'nonOvernightGuests',
+          label: `Will any guests not be staying overnight?`,
+          tooltip: renderTooltip("This helps hosts understand if additional visitors may be present during the day."),
+          type: 'checkbox',
+          value: formData.nonOvernightGuests || false
+        })}
+      </fieldset>
       
-      <div class="checkbox-container">
-        <input 
-          type="checkbox" 
-          id="children-checkbox"
-          name="childrenUnder12" 
-          ${formData.childrenUnder12 ? 'checked' : ''} 
-          onchange="this.getRootNode().host.handleInputChange(event)"
-        />
-        <label for="children-checkbox" class="checkbox-label">
-          Are there any children under 12?
-          ${renderTooltip("Having children in your group may positively affect your trust score.")}
-        </label>
-      </div>
+      <fieldset>
+        <legend class="sr-only">Location Information</legend>
+        
+        ${renderAccessibleFormField({
+          id: 'local-travel-checkbox',
+          name: 'travelingNearHome',
+          label: `Are you traveling within 20 miles of your home?`,
+          tooltip: renderTooltip("Local bookings may require additional context for verification."),
+          type: 'checkbox',
+          value: formData.travelingNearHome || false
+        })}
+        
+        ${formData.travelingNearHome ? 
+          renderAccessibleFormField({
+            id: 'zipcode-input',
+            name: 'zipCode',
+            label: 'ZIP code',
+            value: formData.zipCode || '',
+            required: true,
+            error: errors.zipCode || '',
+            autocomplete: 'postal-code'
+          }) : ''}
+      </fieldset>
       
-      <div class="checkbox-container">
-        <input 
-          type="checkbox" 
-          id="non-overnight-checkbox"
-          name="nonOvernightGuests" 
-          ${formData.nonOvernightGuests ? 'checked' : ''} 
-          onchange="this.getRootNode().host.handleInputChange(event)"
-        />
-        <label for="non-overnight-checkbox" class="checkbox-label">
-          Will any guests not be staying overnight?
-          ${renderTooltip("This helps hosts understand if additional visitors may be present during the day.")}
-        </label>
-      </div>
-      
-      <div class="checkbox-container">
-        <input 
-          type="checkbox" 
-          id="local-travel-checkbox"
-          name="travelingNearHome" 
-          ${formData.travelingNearHome ? 'checked' : ''} 
-          onchange="this.getRootNode().host.handleInputChange(event)"
-        />
-        <label for="local-travel-checkbox" class="checkbox-label">
-          Are you traveling within 20 miles of your home?
-          ${renderTooltip("Local bookings may require additional context for verification.")}
-        </label>
-      </div>
-      
-      ${formData.travelingNearHome ? `
-        <div style="margin-bottom: 15px; margin-left: 25px;">
-          <label for="zipcode-input">ZIP code*</label>
-          <input 
-            type="text" 
-            id="zipcode-input"
-            name="zipCode" 
-            value="${formData.zipCode}" 
-            placeholder="Enter your ZIP code" 
-            onchange="this.getRootNode().host.handleInputChange(event)"
-            aria-required="true"
-            aria-invalid="${errors.zipCode ? 'true' : 'false'}"
-            aria-describedby="${errors.zipCode ? 'zipcode-error' : ''}"
-          />
-          ${errors.zipCode ? `<p id="zipcode-error" class="error" role="alert">${errors.zipCode}</p>` : ''}
-        </div>
-      ` : ''}
-      
-      <div class="checkbox-container">
-        <input 
-          type="checkbox" 
-          id="used-str-checkbox"
-          name="usedSTRBefore" 
-          ${formData.usedSTRBefore ? 'checked' : ''} 
-          onchange="this.getRootNode().host.handleInputChange(event)"
-        />
-        <label for="used-str-checkbox" class="checkbox-label">
-          Have you used short-term rentals before?
-          ${renderTooltip("Prior rental experience may positively impact your trust score.")}
-        </label>
-      </div>
-      
-      ${formData.usedSTRBefore ? `
-        <div style="margin-bottom: 15px; margin-left: 25px;">
-          <label for="previous-stays-input">Optional: Previous stay links</label>
-          <textarea 
-            id="previous-stays-input"
-            name="previousStayLinks" 
-            placeholder="Enter links to previous stays (optional)" 
-            rows="2"
-            onchange="this.getRootNode().host.handleInputChange(event)"
-          >${formData.previousStayLinks}</textarea>
-          <p style="font-size: 12px; color: #666;">Providing links to previous stays can improve your trust score</p>
-        </div>
-      ` : ''}
-    </div>
-  `;
+      <fieldset>
+        <legend class="sr-only">Booking Experience</legend>
+        
+        ${renderAccessibleFormField({
+          id: 'used-str-checkbox',
+          name: 'usedSTRBefore',
+          label: `Have you used short-term rentals before?`,
+          tooltip: renderTooltip("Prior rental experience may positively impact your trust score."),
+          type: 'checkbox',
+          value: formData.usedSTRBefore || false
+        })}
+        
+        ${formData.usedSTRBefore ? 
+          renderAccessibleFormField({
+            id: 'previous-stays-input',
+           name: 'previousStayLinks',
+           label: 'Optional: Previous stay links',
+           type: 'textarea',
+           value: formData.previousStayLinks || '',
+           placeholder: 'Enter links to previous stays (optional)',
+           description: 'Providing links to your previous stays can help build trust with hosts and improve your verification score.'
+         }) : ''}
+     </fieldset>
+   </div>
+ `;
 }
