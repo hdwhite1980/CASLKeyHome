@@ -2,7 +2,7 @@
 import { FORM_STEPS } from '../../utils/constants.js';
 
 /**
- * Renders accessible progress steps indicator
+ * Renders progress steps indicator with improved accessibility
  * @param {number} currentStep - Current step index
  * @returns {string} HTML string for progress steps
  */
@@ -14,23 +14,27 @@ export function renderProgressSteps(currentStep) {
   FORM_STEPS.forEach((step, index) => {
     const isActive = index === currentStep;
     const isCompleted = index < currentStep;
-    const color = index <= currentStep ? 'var(--primary-base)' : 'var(--neutral-light)';
-    const bgColor = isCompleted ? 'var(--primary-base)' : (isActive ? 'white' : '#ddd');
-    const textColor = isCompleted ? 'white' : (isActive ? 'var(--primary-base)' : 'var(--neutral-base)');
-    const borderStyle = isActive ? '2px solid var(--primary-base)' : 'none';
+    const color = index <= currentStep ? 'var(--primary-color)' : '#999';
+    const bgColor = isCompleted ? 'var(--primary-color)' : (isActive ? 'white' : '#ddd');
+    const textColor = isCompleted ? 'white' : (isActive ? 'var(--primary-color)' : '#666');
+    const borderStyle = isActive ? '2px solid var(--primary-color)' : 'none';
     
-    // Add appropriate ARIA attributes for each step
+    // Enhanced aria attributes for better screen reader experience
     stepsHtml += `
       <div 
         class="step ${isActive ? 'active' : ''} ${isCompleted ? 'completed' : ''}" 
-        style="color: ${color}"
-        role="tab"
+        style="color: ${color}" 
+        role="tab" 
         id="step-${index}"
-        aria-selected="${isActive ? 'true' : 'false'}"
+        aria-selected="${isActive ? 'true' : 'false'}" 
         aria-label="Step ${index + 1}: ${step} ${isCompleted ? '(completed)' : isActive ? '(current)' : ''}"
-        aria-controls="step-panel-${index}"
+        aria-controls="step-content-${index}"
       >
-        <div class="step-indicator" style="background-color: ${bgColor}; color: ${textColor}; border: ${borderStyle}">
+        <div 
+          class="step-indicator" 
+          style="background-color: ${bgColor}; color: ${textColor}; border: ${borderStyle}"
+          aria-hidden="true"
+        >
           ${isCompleted ? '✓' : index + 1}
         </div>
         <span class="step-label">${step}</span>
@@ -39,27 +43,41 @@ export function renderProgressSteps(currentStep) {
   });
   
   return `
-    <div class="sr-only" id="progress-description">
-      Form progress: Step ${currentStep + 1} of ${FORM_STEPS.length}: ${FORM_STEPS[currentStep]}
-    </div>
-    
-    <div class="progress-steps" role="tablist" aria-label="Form progress" aria-describedby="progress-description">
-      ${stepsHtml}
+    <div class="progress-container" role="navigation" aria-label="Form progress">
+      <div 
+        class="progress-steps" 
+        role="tablist" 
+        aria-orientation="horizontal"
+      >
+        ${stepsHtml}
+      </div>
+      
+      <div 
+        class="progress-bar" 
+        role="progressbar" 
+        aria-valuenow="${currentStep + 1}" 
+        aria-valuemin="1" 
+        aria-valuemax="${FORM_STEPS.length}"
+        aria-valuetext="Step ${currentStep + 1} of ${FORM_STEPS.length}: ${FORM_STEPS[currentStep]}"
+      >
+        <div 
+          class="progress-indicator" 
+          style="width: ${progressPercentage}%"
+          aria-hidden="true"
+        ></div>
+      </div>
+      
+      <div class="sr-only">
+        You are on step ${currentStep + 1} of ${FORM_STEPS.length}: ${FORM_STEPS[currentStep]}
+      </div>
     </div>
     
     <div 
-      class="progress-bar" 
-      role="progressbar" 
-      aria-valuenow="${currentStep + 1}" 
-      aria-valuemin="1" 
-      aria-valuemax="${FORM_STEPS.length}"
-      aria-label="Form completion progress"
+      class="mobile-step-indicator" 
+      style="text-align: center; margin-bottom: 20px; display: none"
+      aria-hidden="true" 
     >
-      <div class="progress-indicator" style="width: ${progressPercentage}%"></div>
-    </div>
-    
-    <div class="mobile-step-indicator" style="text-align: center; margin-bottom: 20px; display: none">
-      <span style="font-weight: bold" aria-live="polite">Step ${currentStep + 1} of ${FORM_STEPS.length}: ${FORM_STEPS[currentStep]}</span>
+      <span style="font-weight: bold">Step ${currentStep + 1} of ${FORM_STEPS.length}: ${FORM_STEPS[currentStep]}</span>
     </div>
   `;
 }
